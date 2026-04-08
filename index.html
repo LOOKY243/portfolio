@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>~/your-name — portfolio</title>
+<meta name="description" content="Programming & cybersecurity projects by your-name." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <div class="fade-up">
+      <div class="prompt">
+        <span class="caret">$</span> whoami<span class="blink"></span>
+      </div>
+      <h1>Gad Marre<em>.</em></h1>
+      <p class="tagline">
+        <span class="hl">Developer</span> &amp; <span class="hl">pentesting student</span>.
+        I break things, then build better ones.
+        Based somewhere between <code>localhost</code> and the open web.
+      </p>
+    </div>
+    <nav class="top fade-up">
+      <a href="#about">about</a>
+      <a href="#work">work</a>
+      <a href="#contact">contact</a>
+    </nav>
+  </header>
+
+  <section id="about" class="about fade-up">
+    <div class="section-head"><span class="num">01</span> about</div>
+    <p>
+     I’m a cybersecurity student at <em>École 42</em>, specializing in offensive security and actively working toward becoming a professional penetration tester. 
+     My goal is simple: break systems to understand them, then make them stronger.
+     I’m currently preparing for the <em>OSCP</em> certification, while building hands-on experience through CTFs, labs, and personal projects focused on real-world attack scenarios.
+    </p>
+    <p class="focus-intro"><em>I focus mainly on offensive security, with strong interest in:</em></p>
+    <ul class="focus-list">
+      <li><span class="focus-icon">🧠</span> Penetration Testing <span class="focus-meta">— Web, Network, Active Directory</span></li>
+      <li><span class="focus-icon">🕵️</span> Vulnerability Research <span class="focus-meta">— discovery &amp; exploitation</span></li>
+      <li><span class="focus-icon">🧩</span> Capture The Flag <span class="focus-meta">— challenges &amp; write-ups</span></li>
+      <li><span class="focus-icon">🖥️</span> System &amp; Network Analysis</li>
+    </ul>
+  </section>
+
+  <section id="walkthroughs-cta" class="fade-up">
+    <a class="cta" href="walkthroughs.html">
+      <div class="cta-body">
+        <div class="cta-label">/walkthroughs</div>
+        <div class="cta-title">CTF &amp; lab write-ups</div>
+        <div class="cta-desc">Detailed walkthroughs from rooms, boxes, and CTF challenges I've solved.</div>
+      </div>
+      <div class="cta-arrow">→</div>
+    </a>
+  </section>
+
+  <section id="work" class="fade-up">
+    <div class="section-head"><span class="num">02</span> selected work</div>
+    <div class="projects">
+
+      <a class="project" href="https://github.com/LOOKY243/42-Transcendance" target="_blank" rel="noopener">
+        <div class="project-index">/01</div>
+        <div class="project-body">
+          <div class="project-title">42-Transcendance</div>
+          <div class="project-desc">
+            3d multiplayer pong and battleship games built with django and pure JS. Features 2FA, matchmaking and more.
+          </div>
+          <div class="tags">
+            <span class="tag dev">python</span>
+            <span class="tag dev">web</span>
+            <span class="tag dev">docker</span>
+            <span class="tag">open-source</span>
+          </div>
+        </div>
+        <div class="project-arrow">→</div>
+      </a>
+
+      <a class="project" href="https://github.com/LOOKY243/CVE-2025-24071-PoC" target="_blank" rel="noopener">
+        <div class="project-index">/02</div>
+        <div class="project-body">
+          <div class="project-title">CVE-2025-24071-PoC</div>
+          <div class="project-desc">
+            Proof of concept exploit for a critical remote code execution vulnerability in Apache HTTP Server 2.4.57.
+          </div>
+          <div class="tags">
+            <span class="tag sec">security</span>
+            <span class="tag sec">exploit</span>
+            <span class="tag dev">python</span>
+          </div>
+        </div>
+        <div class="project-arrow">→</div>
+      </a>
+
+      <a class="project" href="https://github.com/LOOKY243/ft_ping" target="_blank" rel="noopener">
+        <div class="project-index">/03</div>
+        <div class="project-body">
+          <div class="project-title">Ft_ping</div>
+          <div class="project-desc">
+            A reimplementation of the classic ping utility in C, built from scratch as a learning exercise in network programming and ICMP protocol.
+          </div>
+          <div class="tags">
+            <span class="tag dev">c</span>
+            <span class="tag dev">networking</span>
+            <span class="tag">notes</span>
+          </div>
+        </div>
+        <div class="project-arrow">→</div>
+      </a>
+
+      <a class="project" href="https://github.com/LOOKY243/ft_irc" target="_blank" rel="noopener">
+        <div class="project-index">/04</div>
+        <div class="project-body">
+          <div class="project-title">Ft_irc</div>
+          <div class="project-desc">
+            A custom IRC server and client built in C++, designed to support multiple channels, private messaging, and basic moderation commands.
+          </div>
+          <div class="tags">
+            <span class="tag dev">c++</span>
+            <span class="tag dev">networking</span>
+          </div>
+        </div>
+        <div class="project-arrow">→</div>
+      </a>
+
+    </div>
+  </section>
+
+  <section id="contact" class="fade-up">
+    <div class="section-head"><span class="num">03</span> contact</div>
+    <div class="contact-grid">
+      <a href="https://github.com/LOOKY243" target="_blank" rel="noopener">
+        <span class="label">github</span>
+        <span class="value">@LOOKY243</span>
+      </a>
+      <a href="mailto:gad.marre@gmail.com">
+        <span class="label">email</span>
+        <span class="value">gad.marre@gmail.com</span>
+      </a>
+      <a href="https://tryhackme.com/profile/LOOKY" target="_blank" rel="noopener">
+        <span class="label">Tryhackme</span>
+        <span class="value">@LOOKY</span>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    <div>© <span id="year"></span> Gad Marre — built with &lt;3 and v

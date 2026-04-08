@@ -1,0 +1,20 @@
+[
+  {
+    "title": "PACMAN",
+    "platform": "TryHackMe",
+    "difficulty": "Easy",
+    "date": "2025-01-27",
+    "tags": ["web", "linux", "privesc", "johnTheRipper"],
+    "summary": "Easy Machine from TryHackMe.",
+    "url": "https://medium.com/@gad.marre/pacman-thm-walktrough-bf52af944ef2"
+  },
+  {
+    "title": "Active",
+    "platform": "HackTheBox",
+    "difficulty": "Easy",
+    "date": "2026-03-15",
+    "tags": ["smb", "kerberoast", "windows", "privesc"],
+    "summary": "Easy Machine from HackTheBox.",
+    "url": "https://medium.com/@gad.marre/active-htb-writeup-0852a035ce67"
+  }
+]

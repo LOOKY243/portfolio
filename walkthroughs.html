@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>~/gad-marre/walkthroughs</title>
+<meta name="description" content="CTF and lab walkthroughs by Gad Marre." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <div class="fade-up">
+      <div class="prompt">
+        <span class="caret">$</span> cat ~/walkthroughs<span class="blink"></span>
+      </div>
+      <h1>walkthroughs<em>.</em></h1>
+      <p class="tagline">
+        Notes and full write-ups from <span class="hl">CTF challenges</span>, <span class="hl">TryHackMe rooms</span>,
+        and <span class="hl">HTB machines</span>. Methodology over flags.
+      </p>
+    </div>
+    <nav class="top fade-up">
+      <a href="index.html">← back</a>
+      <a href="index.html#about">about</a>
+      <a href="index.html#contact">contact</a>
+    </nav>
+  </header>
+
+  <section class="fade-up">
+    <div class="section-head">
+      <span class="num">#</span> index
+      <span id="wt-count" class="wt-count"></span>
+    </div>
+
+    <div class="wt-filters" id="wt-filters"></div>
+
+    <div id="walkthroughs" class="walkthroughs">
+      <div class="wt-empty">Loading…</div>
+    </div>
+  </section>
+
+  <footer>
+    <div>© <span id="year"></span> Gad Marre — built with &lt;3 and vim</div>
+    <div>no trackers · no cookies · no nonsense</div>
+  </footer>
+
+</div>
+
+<script src="main.js"></script>
+<script src="walkthroughs.js"></script>
+
+</body>
+</html>
