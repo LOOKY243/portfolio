@@ -181,6 +181,128 @@ section { margin-bottom: 4rem; }
   font-size: 0.85em;
 }
 
+/* Language bars */
+.lang-bars {
+  margin-top: 2rem;
+  max-width: 52ch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.lang-heading {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+  letter-spacing: 0.08em;
+  margin-bottom: 0.35rem;
+}
+
+.lang-row {
+  display: grid;
+  grid-template-columns: 2.2ch 1fr auto;
+  align-items: center;
+  gap: 1rem;
+}
+
+.lang-code {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-transform: lowercase;
+}
+
+.lang-track {
+  position: relative;
+  height: 3px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+.lang-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w);
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  animation: barGrow 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation-delay: 0.4s;
+}
+
+@keyframes barGrow {
+  to { transform: scaleX(1); }
+}
+
+.lang-tag {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+/* Tech stack */
+.tech-stack {
+  margin-bottom: 2.5rem;
+}
+
+.stack-label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+  letter-spacing: 0.08em;
+  margin-bottom: 0.9rem;
+}
+
+.stack-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.stack-item {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--ink);
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--rule);
+  background: var(--bg-2);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.stack-item:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.stack-icon {
+  color: var(--accent);
+  margin-right: 0.4rem;
+  font-size: 0.9em;
+}
+
+.stack-items--sec {
+  margin-top: 0.5rem;
+}
+
+.stack-item--sec {
+  border-color: rgba(255,94,77,0.25);
+  color: var(--ink-dim);
+}
+
+.stack-item--sec:hover {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
+.stack-icon--sec {
+  color: var(--accent-2);
+  margin-right: 0.4rem;
+  font-size: 0.9em;
+}
+
 /* CTA button (walkthroughs link) */
 .cta {
   display: grid;
