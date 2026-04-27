@@ -27,6 +27,42 @@
     "url": "https://medium.com/@gad.marre/smol-thm-walkthrough-b63bce4f4377"
   },
   {
+    "title": "Reel",
+    "platform": "HackTheBox",
+    "difficulty": "Hard",
+    "date": "2026-04-23",
+    "tags": ["windows", "active-directory", "phishing", "cve-2017-0199", "acl-abuse"],
+    "summary": "Anonymous FTP leaks an email from a user asking for RTF files. Weaponize CVE-2017-0199 into a remote HTA payload, relay it through SMTP, catch a shell when the user opens it, decrypt a DPAPI-protected cred.xml for lateral movement, then ride a BloodHound ACL chain (WriteOwner \u2192 WriteDACL) to DCSync the domain.",
+    "url": "walkthroughs/reel.html"
+  },
+  {
+    "title": "Sauna",
+    "platform": "HackTheBox",
+    "difficulty": "Medium",
+    "date": "2026-04-23",
+    "tags": ["windows", "active-directory", "as-rep-roasting", "dcsync", "bloodhound"],
+    "summary": "Scrape usernames from the company website, AS-REP roast the domain, crack fsmith's hash, log in over WinRM, harvest autologon creds from the Winlogon registry key, then DCSync as svc_loanmgr for the Administrator hash.",
+    "url": "walkthroughs/sauna.html"
+  },
+  {
+    "title": "Nibbles",
+    "platform": "HackTheBox",
+    "difficulty": "Medium",
+    "date": "2026-04-23",
+    "tags": ["linux", "nibbleblog", "file-upload", "sudo", "cve-2015-6967"],
+    "summary": "An HTML comment on the landing page hints at a hidden /nibbleblog/ install. Nibbleblog 4.0.3 admin auth + an arbitrary file upload in the My Image plugin yields a PHP shell; sudo then lets the user run a world-writable script as root.",
+    "url": "walkthroughs/nibbles.html"
+  },
+  {
+    "title": "Lame",
+    "platform": "HackTheBox",
+    "difficulty": "Easy",
+    "date": "2026-04-23",
+    "tags": ["linux", "samba", "cve-2007-2447", "rce"],
+    "summary": "The canonical 'my first HTB box'. Samba 3.0.20 usermap_script command injection (CVE-2007-2447) via a crafted smbclient username gives a straight root shell \u2014 no user, no privesc, no pivot.",
+    "url": "walkthroughs/lame.html"
+  },
+  {
     "title": "Daily Bugle",
     "platform": "TryHackMe",
     "difficulty": "Hard",

